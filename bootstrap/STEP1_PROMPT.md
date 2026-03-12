@@ -5,7 +5,7 @@
 - **HUMAN**: You, the developer. You run Claude Code, review output, make design decisions.
 - **CLAUDE CODE**: The AI pair-programmer. It receives the prompt below and builds the kernel.
 - **AGENT SWARM**: Future autonomous Claude instances that will write game logic against the kernel. They don't exist yet. The kernel is being built FOR them.
-- **PLAYTEST AGENT**: A future specialized Claude instance that plays the game and evaluates it. Doesn't exist yet.
+- **RL EVALUATOR**: A future RL-based evaluation pipeline (random agent + trained PPO agent + invariant tests) that validates games quantitatively. Doesn't exist yet.
 
 ## Instructions for HUMAN
 
@@ -30,7 +30,7 @@ Read DEVELOPMENT_PLAN.md for full project context and the 7-step plan.
 - HUMAN: The developer sitting at the keyboard. That's who you're talking to.
 - CLAUDE CODE: You. The AI pair-programmer building the kernel right now.
 - AGENT SWARM: Future autonomous Claude instances that will write game logic against this kernel. They don't exist yet. You are building the kernel FOR them.
-- PLAYTEST AGENT: A future specialized Claude instance that plays and evaluates games. Doesn't exist yet.
+- RL EVALUATOR: A future RL-based evaluation pipeline (random agent + trained PPO agent + invariant tests) that validates games quantitatively. Doesn't exist yet.
 
 # Your role
 
@@ -41,12 +41,14 @@ You are pair-programming with HUMAN. You are building the KERNEL of a turn-based
 Initialize a TypeScript project (Node, strict mode, vitest for testing) and implement the kernel with the architecture below.
 
 ## Core: Grid World
-- `World` class: a 2D grid of cells. Constructor takes width, height.
+- `World` class: a 2D grid of cells. Constructor takes width, height, and an optional `seed` (number, default: 42).
 - Each cell holds an ordered stack of entities (multiple entities per cell).
 - The world is the single source of truth for all game state.
+- `world.random()` → returns a deterministic float in [0, 1) from a seeded PRNG (e.g., a simple mulberry32 or xoshiro implementation). The PRNG state is serialized and restored by `serializeState()`/`loadState()`.
+- **Native `Math.random()` is strictly forbidden in engine and userland code.** All randomness must go through `world.random()` to preserve determinism.
 
 ## Core: Entity System
-- Entities have: a unique string ID (auto-generated), a string `type`, a position `{x, y}`, a glyph (single character for ASCII render), a z-order (for rendering — highest z on top), and a `properties` map (`Record<string, any>`).
+- Entities have: a unique string ID, deterministically generated via internal counter (e.g., `e1`, `e2`, ...). The counter is serialized and restored by `loadState()`. Do NOT use `crypto.randomUUID()` or any random source for IDs. Entities also have: a string `type`, a position `{x, y}`, a glyph (single character for ASCII render), a z-order (for rendering — highest z on top), and a `properties` map (`Record<string, any>`).
 - `world.createEntity(type, x, y, glyph, zOrder?, properties?)` → Entity
 - `world.destroyEntity(id)` → void
 - `world.moveEntity(id, x, y)` → boolean (false if out of bounds)
@@ -59,7 +61,7 @@ Initialize a TypeScript project (Node, strict mode, vitest for testing) and impl
 - Simple pub/sub. The kernel emits built-in events. Userland code (written later by AGENT SWARM) can emit custom events.
 - Built-in events: `turn_start`, `input`, `collision` (when an entity moves into an occupied cell), `entity_created`, `entity_destroyed`, `turn_end`
 - All events carry a payload object. `collision` carries `{ mover: Entity, occupants: Entity[], x: number, y: number }`.
-- Events must support cancellation: handlers receive an event object with a `cancel()` method. If cancelled, the operation that triggered the event (e.g., a move) is rolled back.
+- Events must support cancellation: operations that change state (e.g., `moveEntity`) must emit events BEFORE mutating state. Handlers receive an event object with a `cancel()` method. If a handler calls `cancel()`, the operation is aborted and returns `false`. Do NOT implement post-mutation rollback.
 - `world.on(eventName, handler)` → unsubscribe function
 - `world.emit(eventName, payload)` — userland can emit custom events too
 - Handlers execute in registration order.
@@ -68,6 +70,7 @@ Initialize a TypeScript project (Node, strict mode, vitest for testing) and impl
 - `world.handleInput(action: string, payload?: any)` — this is the entry point for a turn.
 - Sequence: emit `turn_start` → emit `input` with `{ action, payload }` → run all registered behavior handlers for each entity (see below) → emit `turn_end`
 - The turn is fully synchronous. No async. State is deterministic given the same inputs.
+- Guardrail: The kernel must track event emission depth during a turn. If a single turn exceeds a configurable max cascade depth (default: 1000), throw an error. This prevents autonomous userland code from creating infinite event loops.
 
 ## Core: Entity Behaviors (the hook point for AGENT SWARM code)
 - `world.registerBehavior(entityType: string, handler: (entity: Entity, world: World) => void)`
@@ -81,8 +84,14 @@ Initialize a TypeScript project (Node, strict mode, vitest for testing) and impl
 
 ## Core: State Serializer
 - `world.serializeState()` → a plain JSON object containing: grid dimensions, all entities with their full properties, and the current turn number.
-- `world.loadState(state)` → restores from a serialized state. This enables deterministic testing: set up state, run input, assert new state.
-- This is CRITICAL. The mechanical test harness and PLAYTEST AGENT (both built later) depend on this.
+- `world.loadState(state)` → restores from a serialized state. `loadState()` must re-instantiate actual `Entity` class instances with working methods (`set()`, `get()`, etc.). Raw parsed JSON objects are not sufficient. This enables deterministic testing: set up state, run input, assert new state.
+- `world.toGymObservation(entityTypes: string[], propertyKeys: string[])` → a flat `number[]` suitable for RL agent consumption. The caller specifies which entity types and property keys matter (this is game-specific, not kernel-specific). The encoding:
+  - Grid dimensions: `[width, height]`
+  - Turn number: `[turn]`
+  - For each cell `(x, y)` in row-major order: for each entity type in `entityTypes`, a `1` if an entity of that type is present, `0` otherwise. This produces a `width * height * entityTypes.length` block.
+  - For each entity type in `entityTypes`: for the first entity of that type found (by creation order), output each property key's numeric value from `propertyKeys` (default to `0` if missing). This produces an `entityTypes.length * propertyKeys.length` block.
+  - Total length is deterministic given the inputs: `3 + (width * height * entityTypes.length) + (entityTypes.length * propertyKeys.length)`.
+- This is CRITICAL. The mechanical test harness and RL EVALUATOR (both built later) depend on this.
 
 ## What NOT to build
 - No game logic. No enemies, items, doors, keys, health, combat. That is all userland — AGENT SWARM builds it later.
@@ -124,6 +133,12 @@ Write thorough tests for every kernel primitive. These tests are the foundation 
 - Full turn sequence: input → behaviors → events all fire correctly
 - Serialize → load → serialize produces identical JSON (round-trip)
 - Load state, run input, assert deterministic output
+- `toGymObservation` returns correct length, correct entity presence flags, correct property values
+- `toGymObservation` is deterministic: same state + same args = same output
+- `world.random()` returns same sequence from same seed
+- Serialize → load → `world.random()` continues the sequence correctly
+- Two worlds with same seed produce identical random sequences
+- Event cascade guard throws when max depth exceeded
 
 After building this, run all tests and make sure they pass. Then ask HUMAN what they think before moving on.
 

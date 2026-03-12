@@ -5,21 +5,25 @@
 - **HUMAN**: The developer. Runs Claude Code, reviews output, makes design decisions, builds infrastructure.
 - **CLAUDE CODE**: AI pair-programmer. Works under HUMAN supervision during Steps 1–6.
 - **AGENT SWARM**: Future autonomous Claude instances. They write game logic (userland) against the kernel. They do not exist until Step 7.
-- **PLAYTEST AGENT**: A specialized Claude instance (not part of AGENT SWARM) that plays the game through the ASCII interface and evaluates it. Built in Step 6.
+- **RL EVALUATOR**: A layered evaluation system (random agent, trained RL agent, invariant checks) that replaces the need for a Claude-as-judge playtest agent. Built in Steps 2, 5, and 6.
 
 ## Supervision Model
 
 | Step | Who does the work | Autonomous? |
 |------|-------------------|-------------|
 | 1. Kernel | HUMAN + CLAUDE CODE | No — pair programming |
-| 2. Mechanical tests | HUMAN + CLAUDE CODE | No — pair programming |
+| 2. Mechanical tests + random agent | HUMAN + CLAUDE CODE | No — pair programming |
 | 3. Agent prompt | HUMAN | No — HUMAN writes this |
 | 4. Infrastructure | HUMAN | No — HUMAN builds this |
-| 5. Reference game | HUMAN + CLAUDE CODE | No — pair programming |
-| 6. Playtest agent | HUMAN + CLAUDE CODE | No — pair programming |
+| 5. Reference game + Gym wrapper | HUMAN + CLAUDE CODE | No — pair programming |
+| 6. RL evaluation pipeline | HUMAN + CLAUDE CODE | No — pair programming |
 | 7. Swarm on userland | AGENT SWARM | Yes — autonomous |
 
 The critical lesson from Carlini's C compiler project: Steps 1 and 2 are where HUMAN spends disproportionate time. They are not autonomous. Everything after Step 4 benefits from autonomy. Everything before it needs HUMAN's hands on it.
+
+### Why RL instead of Claude-as-judge
+
+The original plan used a Claude playtest agent as the oracle — Claude plays the game, then Claude judges whether the game is good. This has the "oracle problem": the judge is as fallible as the builder. An RL agent solves this by making the evaluation objective and quantitative. If PPO can't learn to win after N episodes, the game is broken. If it wins in 5 episodes, there's no depth. If win rate climbs from 0% to 60% over training, you have real mechanical substance. No subjective judgment needed.
 
 ## How to use this document
 
@@ -33,7 +37,7 @@ This file and STEP1_CLAUDE_CODE_PROMPT.md are the complete bootstrap for the pro
 
 HUMAN supervises CLAUDE CODE to build the kernel. This is the stable foundation that AGENT SWARM will later write game logic against — equivalent to the Rust standard library in Carlini's compiler project. Everything else trusts this layer.
 
-The kernel includes: the entity system, the grid, the turn loop, the hook/behavior registration system, the ASCII renderer, and the structured state serializer. Full API spec is in STEP1_CLAUDE_CODE_PROMPT.md.
+The kernel includes: the entity system, the grid, the turn loop, the hook/behavior registration system, the ASCII renderer, the structured state serializer, and a `toGymObservation()` method on the serializer that produces a flat numeric representation of game state for RL agent consumption. Full API spec is in STEP1_CLAUDE_CODE_PROMPT.md.
 
 HUMAN tests it, reviews it, owns it. This is probably a few days of focused work. AGENT SWARM does not touch this unsupervised.
 
@@ -67,6 +71,12 @@ This is where Carlini spent most of his effort and said so explicitly. Step 1 in
 - Create a chain reaction: entity A's behavior creates entity B, entity B's behavior emits a custom event, that event's handler destroys entity A. Verify all of it resolves in one turn.
 - Register an input handler that creates an entity on action "place_bomb". Fire input. Verify entity exists.
 
+**Random agent fuzz tests** — Layer 1 of the RL evaluation stack, built early because it's cheap and catches crashes:
+- A test that feeds 1000 random valid actions into a game world with registered behaviors. Asserts: no exceptions thrown, world state valid after every turn, serializer round-trip still works after every turn.
+- Parameterized by seed for reproducibility. Different seeds on different runs.
+- This is the first gate on every commit. If random play crashes the game, nothing else matters.
+- Lives in `tests/kernel/random-agent.test.ts`.
+
 **Test runner output format** — designed for AGENT SWARM consumption, not human consumption:
 - On success: one line per test file, e.g. `PASS kernel/world.test.ts (23 tests)`
 - On failure: `FAIL kernel/world.test.ts` followed by `ERROR: [test name] — [one-line reason]`
@@ -89,7 +99,7 @@ HUMAN writes the prompt document that the agent loop feeds to every fresh AGENT 
 - What the project is and what the kernel API looks like (or where to find the docs).
 - What the current game design spec is (or where to find it).
 - How to pick a task: check `current_tasks/` for what's already claimed, read progress docs, pick the next most obvious unclaimed task.
-- How to claim a task: write a file to `current_tasks/` (e.g., `current_tasks/implement_goblin_ai.txt`) and push. If git rejects because another agent claimed it first, pick a different task.
+- How to claim a task: write a file to `current_tasks/` (e.g., `current_tasks/implement_goblin_ai.txt`) and push. If git rejects the push: run `git pull --rebase`. If the only conflict is in `current_tasks/` — the task was claimed by another agent; abort the rebase (`git rebase --abort`) and pick a different task. If the rebase is clean or conflicts are only in userland code — resolve conflicts, re-run `--fast` tests, and push again.
 - How to work: implement the feature in userland, run the mechanical tests with `--fast`, fix regressions, run the full suite before pushing.
 - How to finish: push to upstream, remove the task lock file, update progress docs with what was done and any known issues.
 - How to leave notes: maintain a `PROGRESS.md` and update it frequently. If stuck, document what was tried and what failed so the next agent in this container doesn't repeat the work.
@@ -127,7 +137,7 @@ done
 
 ### Task locking
 - Agent claims a task by writing a file to `current_tasks/` (e.g., `current_tasks/implement_goblin_ai.txt`) containing a short description of the approach.
-- Agent pushes this file to upstream. If git rejects (another agent claimed it), agent picks a different task.
+- Agent pushes this file to upstream. If git rejects the push: agent runs `git pull --rebase`. If the only conflict is in `current_tasks/` — the task was claimed by another agent; abort the rebase and pick a different task. If the rebase is clean or conflicts are only in userland code — resolve conflicts, re-run `--fast` tests, and push again.
 - When done, agent removes the lock file and pushes.
 
 ### How many agents
@@ -162,7 +172,20 @@ A small, complete, playable game using only the kernel API. Suggested scope:
 ### What this validates
 
 1. The kernel API is ergonomic enough for real game logic. If this is painful to write, HUMAN and CLAUDE CODE fix the kernel API before AGENT SWARM hits the same friction at scale.
-2. PLAYTEST AGENT has a known-good baseline to calibrate against in Step 6.
+2. The RL evaluation pipeline (Step 6) has a known-good baseline to calibrate against.
+
+### Gymnasium wrapper
+
+After the reference game works, CLAUDE CODE builds a Gymnasium-compatible wrapper for it. This is the calibration step — equivalent to what the old plan did with Claude playtest calibration, but now it's "can PPO learn to beat the reference dungeon in under 500 episodes?"
+
+The wrapper:
+- Translates kernel state into a Gymnasium observation (via `toGymObservation()`).
+- Maps discrete action indices to the game's valid action strings (`move_north`, `move_south`, etc.).
+- Returns reward: `+1` win, `-1` lose, `-0.01` per turn (encourages efficiency).
+- Returns `done=True` on win, lose, or max turns exceeded.
+- Exposes `reset()` and `step(action)` per the Gymnasium API.
+
+HUMAN trains a baseline Stable-Baselines3 PPO agent against this wrapper. If PPO can learn to beat the reference dungeon (win rate > 50% after 500 episodes), the wrapper and reward signal work. If not, fix them before the swarm runs.
 
 ### Where it lives
 
@@ -171,57 +194,106 @@ userland/
   reference-game/
     game.ts         — all handlers, behaviors, and setup
     game.test.ts    — deterministic tests for this specific game
+  gym-wrapper/
+    env.py          — Gymnasium environment wrapping the kernel (via subprocess or WASM)
+    train_baseline.py — PPO training script for calibration
+    test_wrapper.py — tests that the wrapper satisfies Gymnasium API contract
 ```
 
 The reference game also gets its own mechanical tests: "player moves north, verify position changed." "Player walks into wall, verify position unchanged." "Player walks into enemy, verify health decreased." "Player picks up potion, verify potion removed from grid and health increased."
 
-**Done when**: The reference game is playable via a simple test script that feeds input actions and prints ASCII output. All reference game tests pass.
+**Done when**: The reference game is playable, all reference game tests pass, the Gymnasium wrapper passes API contract tests, and a PPO agent achieves >50% win rate on the reference game within 500 episodes.
 
-**Output**: A complete mini-game in `userland/reference-game/` with its own tests.
+**Output**: A complete mini-game in `userland/reference-game/` with its own tests. A Gymnasium wrapper in `userland/gym-wrapper/` with a trained baseline agent.
 
 ---
 
-## Step 6: HUMAN + CLAUDE CODE build the playtest agent
+## Step 6: HUMAN + CLAUDE CODE build the RL evaluation pipeline
 
-**HUMAN tells CLAUDE CODE**: "Read DEVELOPMENT_PLAN.md. We've completed Steps 1–5. Proceed to Step 6: build the playtest agent."
+**HUMAN tells CLAUDE CODE**: "Read DEVELOPMENT_PLAN.md. We've completed Steps 1–5. Proceed to Step 6: build the RL evaluation pipeline."
 
-PLAYTEST AGENT is a specialized Claude instance. It is NOT part of AGENT SWARM. It does not write code. It pulls the latest build, plays the game through the ASCII interface plus the structured state serializer, and produces a structured evaluation.
+This replaces the original Claude-as-judge playtest agent. Instead of asking Claude "is this game good?", we train an RL agent and read the metrics. This is the equivalent of Carlini's "compile the Linux kernel" integration test — an expensive but high-signal check that runs periodically on the integrated build.
 
-This is the equivalent of Carlini's "compile the Linux kernel" integration test — the expensive, slow, high-signal check that runs after agents think a feature is done.
+### The four evaluation layers
+
+**Layer 1: Random agent** (built in Step 2, runs on every commit)
+- Feeds random valid actions for 1000 turns. No training, no cost.
+- Pure fuzz testing. Catches crashes, invalid states, exceptions.
+- First gate. If this fails, nothing else runs.
+
+**Layer 2: RL agent** (the core of this step)
+- Uses the Gymnasium wrapper from Step 5.
+- Trains a Stable-Baselines3 PPO agent (two-layer MLP policy, sufficient for small discrete environments).
+- Collects metrics: win rate over training, average episode length, convergence speed, state coverage (% of grid cells visited), degenerate strategy detection.
+- Outputs a structured JSON report.
+
+**Layer 3: Invariant tests** (structural checks, run alongside RL)
+- BFS reachability: player can always reach the exit from spawn.
+- Entity coverage: every entity type has a registered behavior.
+- No orphaned rooms: all rooms are connected.
+- State bounds: no property values outside expected ranges after N turns of play.
+- These are deterministic and catch structural problems the RL agent might work around without surfacing.
+
+**Layer 4: Claude playtest** (optional, human-triggered only)
+- NOT part of the automated pipeline.
+- HUMAN can trigger this occasionally for subjective "does this feel coherent" evaluation.
+- The one thing RL metrics genuinely can't tell you.
 
 ### What CLAUDE CODE builds
 
-A playtest harness script that:
+An evaluation pipeline script that:
 
-1. Boots the game from a known starting state.
-2. Feeds the ASCII render + structured state to a Claude API call.
-3. Claude decides an action (from the valid action set).
-4. The harness applies the action, advances the turn, captures the new state.
-5. Repeats for N turns (configurable, default 50).
-6. After the play session, feeds the full game transcript (sequence of states and actions) to a Claude evaluation call.
+1. Runs Layer 1 (random agent) — fast, first gate.
+2. Trains a PPO agent against the game's Gymnasium wrapper for N episodes (configurable, default 500).
+3. Runs Layer 3 invariant tests against the game's starting state.
+4. Collects all metrics and produces a structured JSON evaluation report.
 
-### PLAYTEST AGENT evaluation criteria
+### RL evaluation report format
 
-The evaluation call produces a structured JSON report, not prose. Fields include:
+```json
+{
+  "random_agent": {
+    "turns_played": 1000,
+    "crashes": 0,
+    "invalid_states": 0,
+    "pass": true
+  },
+  "rl_agent": {
+    "episodes_trained": 500,
+    "final_win_rate": 0.62,
+    "win_rate_curve": [0.0, 0.05, 0.12, 0.31, 0.48, 0.62],
+    "avg_episode_length": 47,
+    "state_coverage": 0.78,
+    "convergence_episode": 320,
+    "degenerate_strategies": ["agent camps corner at (0,0) in 12% of wins"]
+  },
+  "invariants": {
+    "exit_reachable": true,
+    "all_behaviors_registered": true,
+    "all_rooms_connected": true,
+    "property_bounds_valid": true
+  },
+  "verdict": "healthy"
+}
+```
 
-- `playable`: boolean — could PLAYTEST AGENT complete actions and observe results?
-- `winnable`: boolean — is there a path to the win condition?
-- `losable`: boolean — is there a fail state?
-- `meaningful_choices`: boolean — were there turns where the best action wasn't obvious?
-- `enemy_threat`: boolean — did enemies actually affect play?
-- `progression`: boolean — did game state change meaningfully over the session?
-- `stuck`: boolean — was PLAYTEST AGENT ever unable to make progress?
-- `notes`: string[] — specific observations, e.g. "enemy never moved", "couldn't find exit"
-- `turn_count`: number — how many turns the session lasted
-- `outcome`: "win" | "lose" | "incomplete"
+### Interpreting results
 
-### Calibration
+- **Broken/unwinnable**: RL win rate stays at 0% after full training. Random agent may also crash.
+- **Too easy / no depth**: RL solves it in <20 episodes. Win rate jumps to 90%+ immediately.
+- **Healthy**: Win rate climbs gradually (0% → 40–70%) over hundreds of episodes. Agent visits most of the grid. No degenerate strategies dominate.
+- **Degenerate design**: RL finds a dominant strategy (e.g., camp a safe corner, ignore items). Win rate is high but state coverage is low.
+- **Balance problems**: Agent never picks up certain items, or dies to the same enemy placement consistently.
 
-HUMAN runs PLAYTEST AGENT against the reference game from Step 5 first. The reference game should score `true` on all boolean fields. If it doesn't, HUMAN adjusts PLAYTEST AGENT's prompts until it does. Only then is PLAYTEST AGENT trusted to evaluate AGENT SWARM output.
+### Framework
 
-**Done when**: PLAYTEST AGENT plays the reference game and produces a correct structured evaluation.
+- **Stable-Baselines3** for PPO (pip-installable, works out of the box for small discrete envs).
+- **Gymnasium** for the environment API.
+- Communication between Python (RL) and TypeScript (kernel) via subprocess + JSON over stdin/stdout, or a compiled WASM module.
 
-**Output**: Playtest harness script. Evaluation prompt. Calibration results against the reference game.
+**Done when**: The evaluation pipeline runs against the reference game and produces a healthy report. PPO achieves >50% win rate. Invariant tests all pass. Report format is stable and parseable.
+
+**Output**: Evaluation pipeline script. Trained baseline agent. Structured evaluation report for the reference game.
 
 ---
 
@@ -241,7 +313,7 @@ Each agent's cycle:
 7. Run full mechanical test suite. All must pass.
 8. Push to upstream. Remove lock file. Update PROGRESS.md.
 
-HUMAN runs PLAYTEST AGENT periodically (not every commit — it's expensive) on the integrated build. If PLAYTEST AGENT surfaces problems, HUMAN can either intervene directly or add new mechanical tests that encode the problem, which AGENT SWARM will then fix autonomously.
+The RL evaluation pipeline runs periodically (not every commit — training takes minutes) on the integrated build. Layer 1 (random agent) runs on every commit as part of the test suite. If the RL evaluation surfaces problems (win rate regression, degenerate strategies, broken invariants), HUMAN can either intervene directly or add new mechanical tests that encode the problem, which AGENT SWARM will then fix autonomously.
 
 ### Parallelism guidance (from Carlini)
 
@@ -249,6 +321,6 @@ HUMAN runs PLAYTEST AGENT periodically (not every commit — it's expensive) on 
 - When agents converge on the same problem (e.g., a single integration bug), reduce agent count or decompose the problem further.
 - Consider specialized agent roles: one agent for code quality/deduplication, one for documentation, one for performance.
 
-**Done when**: HUMAN decides the game meets their quality bar, informed by PLAYTEST AGENT evaluations and their own judgment.
+**Done when**: HUMAN decides the game meets their quality bar, informed by RL evaluation metrics (win rate, convergence, coverage, degenerate strategy detection) and their own judgment.
 
-**Output**: A complete game, built autonomously by AGENT SWARM, validated by both mechanical tests and PLAYTEST AGENT.
+**Output**: A complete game, built autonomously by AGENT SWARM, validated by mechanical tests, random agent fuzzing, RL evaluation pipeline, and invariant checks.
