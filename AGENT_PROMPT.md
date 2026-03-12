@@ -16,13 +16,48 @@ The kernel is a strict `gymnasium.Env` located in `kernel/`. You cannot change t
 6. **Determinism:** Native `random.random()` and `numpy.random` are strictly forbidden. You MUST use `env.random()` for all spawning, damage rolls, and enemy behaviors.
 7. **Rewards:** The engine natively handles step penalties and terminal rewards (+10.0/-10.0). You only need to emit `reward` events for intermediate shaping (e.g., `env.emit('reward', {'amount': 0.1})` for picking up an item).
 
+## RL Evaluation (How Your Game Will Be Judged)
+
+After you push, `evaluate_game.py` will run your game through three layers. **All three must pass.**
+
+### Layer 1 — Random Agent (1000 episodes)
+A random agent plays 1000 episodes. **Pass:** zero crashes AND termination rate > 80%. This catches broken game logic, infinite loops, and setup crashes across many random seeds.
+
+### Layer 2 — PPO Training (500k steps)
+PPO trains for 500k steps, then win rate is measured at 10% and 100% of the budget. **Pass:** win rate must improve (learning delta > 0). If PPO can't learn your game at all, the game fails.
+
+**How the evaluator helps your game learn:**
+- It wraps your env with `RandomSeedWrapper` — each reset gets a new random seed, so your game MUST work correctly across many seeds, not just seed 42.
+- It wraps your env with `DistanceShapingWrapper` — a small bonus for getting closer to the **nearest `pickup`-tagged entity**, then the **nearest `exit`-tagged entity** (only if BFS-reachable). This is automatic and free.
+
+**What this means for your implementation:**
+- **Tag collectible items as `pickup`.** Keys, potions, food, dots — anything the player should collect first. The evaluator's shaping will guide PPO toward them.
+- **Tag the goal as `exit`** if your game has one. The shaping will guide PPO there after pickups are collected.
+- **If your game has NO exit** (e.g., win by collecting all items, or pushing blocks onto targets), the evaluator shaping is disabled — you MUST provide your own intermediate rewards via `env.emit('reward', ...)`.
+- **Intermediate rewards are not optional for multi-step games.** Terminal reward alone (+10 for win) is too sparse. Emit small rewards (0.05–0.2) for each meaningful subgoal: picking up a key, opening a door, collecting a dot, pushing a block onto a target.
+
+### Layer 3 — Invariant Tests
+Built-in invariants (player singleton, no empty tags, behaviors registered) plus any game-specific invariants you declare. **All must pass.**
+
+**Exit invariants are opt-in.** If your game has an exit entity, add this to your module:
+```python
+from asciiswarm.kernel.invariants import EXIT_INVARIANTS
+INVARIANTS = list(EXIT_INVARIANTS)
+```
+If the exit is blocked at setup (e.g., behind a locked door), only add `exit_exists`:
+```python
+from asciiswarm.kernel.invariants import check_exit_exists, Invariant
+INVARIANTS = [Invariant('exit_exists', check_exit_exists)]
+```
+If your game has no exit entity, don't add exit invariants.
+
 ## Your Workflow
 
 1. **Pick a Task:** Look in `game-specs/` for game specifications. Look in `games/` to see what is already built. Check `current_tasks/` to see what other agents are building. Find a game spec (04 through 08) that does NOT have a passing implementation and is NOT claimed.
-2. **Claim the Task:** Create a file in `current_tasks/` (e.g., `current_tasks/implement_sokoban.txt`) with a 1-sentence description. Run `git add current_tasks/`, `git commit -m "Claim [Game Name]"`, and `git push`. 
+2. **Claim the Task:** Create a file in `current_tasks/` (e.g., `current_tasks/implement_sokoban.txt`) with a 1-sentence description. Run `git add current_tasks/`, `git commit -m "Claim [Game Name]"`, and `git push`.
    * *Merge Conflict Handling:* If git rejects your push, run `git pull --rebase`. If there is a merge conflict inside `current_tasks/`, another agent beat you to it! Run `git rebase --abort`, delete your lockfile, and pick a different game. If conflicts are purely in userland code, resolve them, verify tests pass, and push again.
 3. **Build:** Implement the game as a single Python file in `games/` (e.g., `games/04_dungeon_crawl.py`). Write mechanical and invariant tests in `tests/games/`.
-4. **Test & Fix:** 
+4. **Test & Fix:**
    - Run mechanical tests: `python run_tests.py --fast --seed 42`.
    - Run the random agent fuzz test for your game explicitly to ensure no crashes.
    - Run the invariant tests.

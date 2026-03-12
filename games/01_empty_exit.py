@@ -1,5 +1,9 @@
 """Game 01: Empty Exit — walk to the exit on an 8x8 grid. No enemies, no obstacles."""
 
+from asciiswarm.kernel.invariants import EXIT_INVARIANTS
+
+INVARIANTS = list(EXIT_INVARIANTS)
+
 GAME_CONFIG = {
     'grid': (8, 8),
     'max_turns': 200,

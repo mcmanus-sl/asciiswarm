@@ -298,26 +298,20 @@ def run_ppo_training(game_module, total_steps=500_000, seed=42):
 # ---- Layer 3: Invariant Tests ----
 
 def run_invariants_check(game_module, seed=42):
-    """Run all invariants against a freshly-reset env.
-
-    Respects SKIP_INVARIANTS set on the game module (same convention as test suite).
-    """
+    """Run all invariants against a freshly-reset env."""
     env = make_env(game_module, seed=seed)
     env.reset(seed=seed)
 
-    skip = getattr(game_module, 'SKIP_INVARIANTS', set())
     results = run_invariants(env, game_module)
 
     total = len(results)
     passed = sum(1 for _, ok, _ in results if ok)
-    skipped_names = [name for name, ok, _ in results if name in skip and not ok]
-    failed = [name for name, ok, _ in results if not ok and name not in skip]
-    failed_details = {name: msg for name, ok, msg in results if not ok and name not in skip}
+    failed = [name for name, ok, _ in results if not ok]
+    failed_details = {name: msg for name, ok, msg in results if not ok}
 
     return {
         'total': total,
         'passed': passed,
-        'skipped': skipped_names,
         'failed': failed,
         'failed_details': failed_details if failed_details else {},
         'pass': len(failed) == 0,

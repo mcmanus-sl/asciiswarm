@@ -1,10 +1,10 @@
 """Game 03: Lock & Key — find a key, unlock a door, reach the exit."""
 
-from asciiswarm.kernel.invariants import invariant, InvariantError
+from asciiswarm.kernel.invariants import invariant, InvariantError, check_exit_exists, Invariant
 
-# exit_reachable fails at setup because the door (solid) blocks BFS.
-# The exit becomes reachable once the door is destroyed.
-SKIP_INVARIANTS = {'exit_reachable'}
+# Only check exit_exists, not exit_reachable — the door blocks BFS at setup.
+# exit_reachable becomes true after the player unlocks the door.
+INVARIANTS = [Invariant('exit_exists', check_exit_exists)]
 
 GAME_CONFIG = {
     'grid': (12, 12),

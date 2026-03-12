@@ -176,16 +176,10 @@ class TestLockAndKeyFuzz:
 # ---- Invariant tests ----
 
 class TestLockAndKeyInvariants:
-    # exit_reachable is expected to fail at setup because the door (solid)
-    # blocks BFS. The exit becomes reachable once the door is destroyed.
-    SKIP_INVARIANTS = {'exit_reachable'}
-
     def test_all_invariants(self):
         env = make_env()
         results = run_invariants(env, game_module)
         for name, passed, err in results:
-            if name in self.SKIP_INVARIANTS:
-                continue
             assert passed, f"Invariant {name} failed: {err}"
 
     def test_invariants_multiple_seeds(self):
@@ -193,8 +187,6 @@ class TestLockAndKeyInvariants:
             env = make_env(seed=seed)
             results = run_invariants(env, game_module)
             for name, passed, err in results:
-                if name in self.SKIP_INVARIANTS:
-                    continue
                 assert passed, f"Seed {seed}, invariant {name} failed: {err}"
 
     def test_exit_reachable_after_door_destroyed(self):

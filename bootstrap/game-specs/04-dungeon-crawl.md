@@ -4,14 +4,14 @@
 A multi-room dungeon with combat, health management, and three enemy types. The player must fight or avoid enemies, collect health potions, and reach the exit on the far side of the map. This is the first game intended for AGENT SWARM to build autonomously.
 
 ## Grid
-- Dimensions: 30×20
+- Dimensions: 16×16
 
 ## GAME_CONFIG
 
 ```python
 GAME_CONFIG = {
     'tags': ['player', 'solid', 'hazard', 'pickup', 'exit'],
-    'grid': (30, 20),
+    'grid': (16, 16),
     'max_turns': 500,
     'step_penalty': -0.005,
     'player_properties': [
@@ -45,7 +45,7 @@ GAME_CONFIG = {
 
 ## Room Generation
 
-Generate 5–7 rectangular rooms (random sizes within 5×5 to 10×8) placed non-overlapping on the grid. Connect adjacent rooms with corridors (1 tile wide). All rooms must be connected — verify with BFS. Use `env.random()` for all random placement.
+Generate 3–5 rectangular rooms (random sizes within 4×4 to 6×6) placed non-overlapping on the grid. Connect adjacent rooms with corridors (1 tile wide). All rooms must be connected — verify with BFS. Use `env.random()` for all random placement.
 
 ## Behaviors
 
@@ -104,9 +104,8 @@ Player health reaches 0.
 
 | Metric | Expected Range |
 |--------|---------------|
-| Random agent win rate | 0.5–5% |
-| PPO win rate at 100k steps | >15% |
-| PPO learning delta (100k - 10k) | >8% |
+| Random agent win rate | 1–10% |
+| PPO learning delta (500k vs 50k) | >0 |
 
 ## Invariant Tests (game-specific)
 

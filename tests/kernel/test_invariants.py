@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from asciiswarm.kernel.env import GridGameEnv
 from asciiswarm.kernel.invariants import (
     invariant, run_invariants, Invariant, InvariantError,
-    get_game_invariants, BUILTIN_INVARIANTS,
+    get_game_invariants, BUILTIN_INVARIANTS, EXIT_INVARIANTS,
     check_player_singleton, check_exit_exists, check_no_empty_tags,
     check_exit_reachable,
 )
@@ -178,6 +178,7 @@ class TestGameInvariants:
             # No exit — exit_exists will fail
 
         mod = _make_module(setup=setup)
+        mod.INVARIANTS = list(EXIT_INVARIANTS)  # opt in to exit checks
         env = GridGameEnv(mod)
         env.reset(seed=42)
 

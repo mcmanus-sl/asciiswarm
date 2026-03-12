@@ -122,10 +122,15 @@ def check_behaviors_registered(env):
 
 BUILTIN_INVARIANTS = [
     Invariant('player_singleton', check_player_singleton, builtin=True),
-    Invariant('exit_exists', check_exit_exists, builtin=True),
     Invariant('no_empty_tags', check_no_empty_tags, builtin=True),
-    Invariant('exit_reachable', check_exit_reachable, builtin=True),
     Invariant('behaviors_registered', check_behaviors_registered, builtin=True),
+]
+
+# Exit invariants — opt-in for games that have exit entities.
+# Import and add to your game's INVARIANTS list or use @invariant.
+EXIT_INVARIANTS = [
+    Invariant('exit_exists', check_exit_exists),
+    Invariant('exit_reachable', check_exit_reachable),
 ]
 
 

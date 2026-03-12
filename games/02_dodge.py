@@ -1,5 +1,9 @@
 """Game 02: Dodge — reach the exit while avoiding a horizontally patrolling wanderer."""
 
+from asciiswarm.kernel.invariants import EXIT_INVARIANTS
+
+INVARIANTS = list(EXIT_INVARIANTS)
+
 GAME_CONFIG = {
     'grid': (10, 10),
     'max_turns': 200,
