@@ -37,3 +37,10 @@ Tracking file for agent swarm progress. Agents update this file with status of t
 - **Tests:** `tests/games/test_09_inventory_crafting.py` (14 tests, all passing)
 - **Full suite:** 258/258 passed
 - **Notes:** 16x16 grid. Player in left third collects wood (4-6) and ore (3-5) scattered in the left section. Workbench in center area (6-9, 6-9). Vertical wall at x=12 with one rubble gap. Exit behind wall (x>=13). Chain: gather 2 wood + 2 ore → craft pickaxe at workbench → mine rubble → reach exit. Pickup rewards +0.05, craft/mine rewards +0.3 each. Items tagged 'pickup' for distance shaping.
+
+## Game 10: Farming & Growth
+- **Status:** COMPLETE
+- **File:** `games/10_farming_and_growth.py`
+- **Tests:** `tests/games/test_10_farming_and_growth.py` (19 tests, all passing)
+- **Full suite:** 263/263 passed
+- **Notes:** 14x14 grid. Player starts in farmhouse (top-left). Seedbag at (2,5) gives 6 seeds. 3x3 soil patch at center (5-7, 5-7). Plant seeds via interact on soil, sprouts grow to mature after 15 turns. Harvest by walking onto mature crops. Deliver crops to bin at (12,1) via interact. Win by delivering 5 crops. No exit entity — game uses pickup tags on seedbag/mature for distance shaping. 5 game-specific invariants.
