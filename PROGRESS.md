@@ -45,6 +45,14 @@ Tracking file for agent swarm progress. Agents update this file with status of t
 - **Full suite:** 258/258 passed
 - **Notes:** 16x16 grid. Player in left third collects wood (4-6) and ore (3-5) scattered in the left section. Workbench in center area (6-9, 6-9). Vertical wall at x=12 with one rubble gap. Exit behind wall (x>=13). Chain: gather 2 wood + 2 ore → craft pickaxe at workbench → mine rubble → reach exit. Pickup rewards +0.05, craft/mine rewards +0.3 each. Items tagged 'pickup' for distance shaping.
 
+## Game 12: NPC Allies & Orders
+- **Status:** COMPLETE
+- **File:** `games/12_npc_allies_and_orders.py`
+- **Tests:** `tests/games/test_12_npc_allies_and_orders.py` — 14/14 pass
+- **Full suite:** 317/317 passed
+- **RL Eval:** Random agent 0 crashes, 100% termination, 4.7% win rate. PPO early=44%, final=98%, delta=0.54. All 10 invariants pass.
+- **Notes:** 20x20 grid. Player at (2,10) in base room (left side). 3 allies start in follow mode inside base. 6-8 trees in middle zone (5<=x<=13). 2-3 raiders on right side (x>=15). Exit at (18,10). Stockpile in base, 3 barricade slots at x=14. Order actions: order_follow, order_guard, order_harvest. Allies harvest trees to stockpile (+1 wood each), guard barricade zone (attack nearby raiders), or follow player. Player can build barricades (2 wood each) at slots via interact. Combat: player HP=5, raider HP=2, ally HP=3. Intermediate rewards: +0.2 barricade build, +0.15 raider kill, +0.1 wood deposit. Tags: pickup for trees, exit for goal.
+
 ## Game 10: Farming & Growth
 - **Status:** COMPLETE
 - **File:** `games/10_farming_and_growth.py`
