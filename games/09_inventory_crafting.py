@@ -1,8 +1,8 @@
-"""Game 09: Inventory & Crafting — collect wood and ore, craft a pickaxe, mine rubble, reach exit."""
+"""Game 09: Inventory & Crafting — collect wood/ore, craft pickaxe, mine rubble, reach exit."""
 
 from asciiswarm.kernel.invariants import invariant, InvariantError, check_exit_exists, Invariant
 
-# Exit exists but is blocked by rubble wall at setup, so only check existence.
+# Exit is blocked by rubble at setup, so only check exit_exists (not reachable).
 INVARIANTS = [Invariant('exit_exists', check_exit_exists)]
 
 GAME_CONFIG = {
@@ -35,61 +35,44 @@ def setup(env):
         if y != rubble_y:
             env.create_entity('wall', 12, y, '#', ['solid'], z_order=1)
 
-    # Rubble at the gap
-    rubble = env.create_entity('rubble', 12, rubble_y, '%', ['solid'], z_order=5)
+    # Place rubble entity at the gap
+    env.create_entity('rubble', 12, rubble_y, '%', ['solid'], z_order=5)
 
-    # Helper: find random empty cell in a region
-    def random_empty(x_min, x_max, y_min, y_max):
-        for _ in range(200):
-            rx = x_min + int(env.random() * (x_max - x_min + 1))
-            ry = y_min + int(env.random() * (y_max - y_min + 1))
-            if not env.get_entities_at(rx, ry):
-                return rx, ry
-        # Fallback: scan for any empty cell
-        for rx in range(x_min, x_max + 1):
-            for ry in range(y_min, y_max + 1):
-                if not env.get_entities_at(rx, ry):
-                    return rx, ry
-        return x_min, y_min
+    def _find_empty(x_min, x_max, y_min, y_max):
+        """Find a random empty cell in the given range."""
+        while True:
+            x = x_min + int(env.random() * (x_max - x_min + 1))
+            y = y_min + int(env.random() * (y_max - y_min + 1))
+            if not env.get_entities_at(x, y):
+                return x, y
 
-    # Player in left third (x < 5), inside walls
-    px, py = random_empty(1, 4, 1, h - 2)
+    # Player in left third (x < 5)
+    px, py = _find_empty(1, 4, 1, h - 2)
     player = env.create_entity('player', px, py, '@', ['player'], z_order=10,
                                properties={'wood': 0, 'ore': 0, 'has_pickaxe': 0})
 
     # Workbench in center area (6 <= x <= 9, 6 <= y <= 9)
-    wx, wy = random_empty(6, 9, 6, 9)
+    wx, wy = _find_empty(6, 9, 6, 9)
     env.create_entity('workbench', wx, wy, 'W', ['npc'], z_order=5)
 
-    # Wood: 4-6 scattered in playable area (x=1..11, y=1..h-2)
+    # Wood: 4-6 scattered in interior (not on wall at x=12 or right section)
     num_wood = 4 + int(env.random() * 3)
     for _ in range(num_wood):
-        tx, ty = random_empty(1, 11, 1, h - 2)
-        env.create_entity('wood', tx, ty, 't', ['pickup'], z_order=3)
+        x, y = _find_empty(1, 11, 1, h - 2)
+        env.create_entity('wood', x, y, 't', ['pickup'], z_order=3)
 
-    # Ore: 3-5 scattered in playable area
+    # Ore: 3-5 scattered in interior
     num_ore = 3 + int(env.random() * 3)
     for _ in range(num_ore):
-        ox, oy = random_empty(1, 11, 1, h - 2)
-        env.create_entity('ore', ox, oy, 'o', ['pickup'], z_order=3)
+        x, y = _find_empty(1, 11, 1, h - 2)
+        env.create_entity('ore', x, y, 'o', ['pickup'], z_order=3)
 
-    # Exit in right section (x >= 13), inside walls
-    ex, ey = random_empty(13, w - 2, 1, h - 2)
+    # Exit in right section (x >= 13)
+    ex, ey = _find_empty(13, w - 2, 1, h - 2)
     env.create_entity('exit', ex, ey, '>', ['exit'], z_order=5)
 
-    # --- Event Handlers ---
+    # ---- Event Handlers ----
 
-    # before_move: solids block movement
-    def on_before_move(event):
-        tx, ty = event.payload['to_x'], event.payload['to_y']
-        for ent in env.get_entities_at(tx, ty):
-            if ent.has_tag('solid'):
-                event.cancel()
-                return
-
-    env.on('before_move', on_before_move)
-
-    # input: player movement + interact
     def on_input(event):
         p = env.get_entities_by_tag('player')
         if not p:
@@ -107,20 +90,23 @@ def setup(env):
             dx, dy = moves[action]
             env.move_entity(p.id, p.x + dx, p.y + dy)
         elif action == 'interact':
-            # Check neighbors for workbench or rubble
+            # Check 4 cardinal neighbors for workbench
             for dx, dy in [(0, -1), (0, 1), (1, 0), (-1, 0)]:
                 nx, ny = p.x + dx, p.y + dy
                 for ent in env.get_entities_at(nx, ny):
                     if ent.type == 'workbench':
-                        # Craft pickaxe if enough materials
                         if p.properties.get('wood', 0) >= 2 and p.properties.get('ore', 0) >= 2:
                             p.properties['wood'] -= 2
                             p.properties['ore'] -= 2
                             p.properties['has_pickaxe'] = 1
                             env.emit('reward', {'amount': 0.3})
                         return
+
+            # Check 4 cardinal neighbors for rubble
+            for dx, dy in [(0, -1), (0, 1), (1, 0), (-1, 0)]:
+                nx, ny = p.x + dx, p.y + dy
+                for ent in env.get_entities_at(nx, ny):
                     if ent.type == 'rubble':
-                        # Mine rubble if has pickaxe
                         if p.properties.get('has_pickaxe', 0) == 1:
                             env.destroy_entity(ent.id)
                             p.properties['has_pickaxe'] = 0
@@ -129,7 +115,17 @@ def setup(env):
 
     env.on('input', on_input)
 
-    # collision: pickup items and reach exit
+    # Before_move — solids block movement
+    def on_before_move(event):
+        tx, ty = event.payload['to_x'], event.payload['to_y']
+        for ent in env.get_entities_at(tx, ty):
+            if ent.has_tag('solid'):
+                event.cancel()
+                return
+
+    env.on('before_move', on_before_move)
+
+    # Collision — pickup items and reach exit
     def on_collision(event):
         mover = event.payload['mover']
         if not mover.has_tag('player'):
@@ -137,15 +133,13 @@ def setup(env):
         for occ in event.payload['occupants']:
             if occ.has_tag('pickup'):
                 if occ.type == 'wood':
-                    cur = mover.properties.get('wood', 0)
-                    mover.properties['wood'] = min(cur + 1, 5)
-                    env.destroy_entity(occ.id)
-                    env.emit('reward', {'amount': 0.05})
+                    current = mover.properties.get('wood', 0)
+                    mover.properties['wood'] = min(current + 1, 5)
                 elif occ.type == 'ore':
-                    cur = mover.properties.get('ore', 0)
-                    mover.properties['ore'] = min(cur + 1, 5)
-                    env.destroy_entity(occ.id)
-                    env.emit('reward', {'amount': 0.05})
+                    current = mover.properties.get('ore', 0)
+                    mover.properties['ore'] = min(current + 1, 5)
+                env.destroy_entity(occ.id)
+                env.emit('reward', {'amount': 0.05})
             elif occ.has_tag('exit'):
                 env.end_game('won')
 
@@ -156,16 +150,16 @@ def setup(env):
 
 @invariant('one_workbench')
 def check_one_workbench(env):
-    wbs = env.get_entities_by_type('workbench')
-    if len(wbs) != 1:
-        raise InvariantError(f"Expected 1 workbench, found {len(wbs)}")
+    wb = env.get_entities_by_type('workbench')
+    if len(wb) != 1:
+        raise InvariantError(f"Expected 1 workbench, found {len(wb)}")
 
 
 @invariant('one_rubble')
 def check_one_rubble(env):
-    rubbles = env.get_entities_by_type('rubble')
-    if len(rubbles) != 1:
-        raise InvariantError(f"Expected 1 rubble, found {len(rubbles)}")
+    rubble = env.get_entities_by_type('rubble')
+    if len(rubble) != 1:
+        raise InvariantError(f"Expected 1 rubble, found {len(rubble)}")
 
 
 @invariant('enough_wood_and_ore')
@@ -178,26 +172,32 @@ def check_enough_materials(env):
         raise InvariantError(f"Expected at least 2 ore, found {len(ore)}")
 
 
-@invariant('player_inventory_empty')
-def check_player_inventory(env):
+@invariant('player_inventory_zero')
+def check_player_inventory_zero(env):
     p = env.get_entities_by_tag('player')[0]
     if p.properties.get('wood', 0) != 0:
-        raise InvariantError(f"Player starts with wood={p.properties['wood']}")
+        raise InvariantError("Player starts with wood != 0")
     if p.properties.get('ore', 0) != 0:
-        raise InvariantError(f"Player starts with ore={p.properties['ore']}")
+        raise InvariantError("Player starts with ore != 0")
     if p.properties.get('has_pickaxe', 0) != 0:
-        raise InvariantError(f"Player starts with has_pickaxe={p.properties['has_pickaxe']}")
+        raise InvariantError("Player starts with has_pickaxe != 0")
 
 
 @invariant('exit_behind_rubble')
 def check_exit_behind_rubble(env):
-    ex = env.get_entities_by_tag('exit')[0]
-    if ex.x < 13:
-        raise InvariantError(f"Exit at x={ex.x}, expected x >= 13")
+    exits = env.get_entities_by_tag('exit')
+    if not exits:
+        raise InvariantError("No exit found")
+    e = exits[0]
+    if e.x < 13:
+        raise InvariantError(f"Exit at x={e.x}, expected x >= 13")
 
 
 @invariant('rubble_at_x12')
-def check_rubble_position(env):
-    rubble = env.get_entities_by_type('rubble')[0]
-    if rubble.x != 12:
-        raise InvariantError(f"Rubble at x={rubble.x}, expected x=12")
+def check_rubble_at_x12(env):
+    rubble = env.get_entities_by_type('rubble')
+    if not rubble:
+        raise InvariantError("No rubble found")
+    r = rubble[0]
+    if r.x != 12:
+        raise InvariantError(f"Rubble at x={r.x}, expected x=12")

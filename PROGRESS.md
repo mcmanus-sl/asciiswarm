@@ -24,14 +24,6 @@ Tracking file for agent swarm progress. Agents update this file with status of t
 - Hardcoded fallback layout if procedural generation fails after 100 attempts
 - Exit invariants + 5 game-specific invariants
 
-## Game 08: Block Push
-- **Status**: COMPLETE
-- **File**: `games/08_block_push.py`
-- **Tests**: `tests/games/test_08_block_push.py` — 10/10 pass
-- **Full suite**: 228/228 pass
-- **Random agent**: 1000 episodes, 0 crashes, 0.5% win rate (within spec 0.5-5%)
-- **Notes**: 8x8 grid, simplified Sokoban. 2 blocks (center), 2 targets (top half), player (bottom half). Solvability BFS during generation (max 50 moves, 100 attempts, fallback layout). Push mechanics via collision handler with before_move allowing pushable entities. Distance-based reward shaping for PPO. No lose condition (truncates at 300).
-
 ## Game 07: Hunger Clock
 - **Status:** COMPLETE
 - **File:** `games/07_hunger_clock.py`
@@ -42,6 +34,6 @@ Tracking file for agent swarm progress. Agents update this file with status of t
 ## Game 09: Inventory & Crafting
 - **Status:** COMPLETE
 - **File:** `games/09_inventory_crafting.py`
-- **Tests:** `tests/games/test_09_inventory_crafting.py` — 16/16 pass
-- **Full suite:** 249/249 passed
-- **Notes:** 16x16 grid. Player starts in left third (x<5). Collect wood (4-6) and ore (3-5) scattered in playable area. Craft pickaxe at workbench (center area) with 2 wood + 2 ore via interact. Mine rubble at x=12 wall gap with pickaxe (breaks after use). Exit behind rubble wall (x>=13). No enemies, no lose condition — truncates at 400 turns. Intermediate rewards: +0.05 per pickup, +0.3 for crafting, +0.3 for mining rubble. Tags: pickup for wood/ore (distance shaping), exit for goal.
+- **Tests:** `tests/games/test_09_inventory_crafting.py` (14 tests, all passing)
+- **Full suite:** 258/258 passed
+- **Notes:** 16x16 grid. Player in left third collects wood (4-6) and ore (3-5) scattered in the left section. Workbench in center area (6-9, 6-9). Vertical wall at x=12 with one rubble gap. Exit behind wall (x>=13). Chain: gather 2 wood + 2 ore → craft pickaxe at workbench → mine rubble → reach exit. Pickup rewards +0.05, craft/mine rewards +0.3 each. Items tagged 'pickup' for distance shaping.
