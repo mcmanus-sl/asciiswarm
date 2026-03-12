@@ -2,6 +2,13 @@
 
 Tracking file for agent swarm progress. Agents update this file with status of their work.
 
+## Game 04: Dungeon Crawl — DONE
+- Implemented in `games/04_dungeon_crawl.py`
+- Tests in `tests/games/test_04_dungeon_crawl.py` (11 tests, all passing)
+- Features: procedural room generation (3-5 rooms), 3 enemy types (wanderer, chaser, sentinel), combat system, health potions, exit goal
+- Invariants: rooms connected, potions exist, enemy count in range, player healthy, no enemy on player spawn, exit reachable
+- Exit invariants (EXIT_INVARIANTS) included
+
 ## Game 05: Pac-Man Collect
 - **Status**: COMPLETE
 - **File**: `games/05_pac_collect.py`
