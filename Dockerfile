@@ -15,5 +15,10 @@ RUN pip install --no-cache-dir \
 COPY start_agent.sh /usr/local/bin/start_agent.sh
 RUN chmod +x /usr/local/bin/start_agent.sh
 
+RUN useradd -m -s /bin/bash agent && \
+    mkdir -p /workspace /agent_logs && \
+    chown agent:agent /workspace /agent_logs
+USER agent
+
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/start_agent.sh"]
