@@ -1,0 +1,11 @@
+services:
+  agent:
+    build: .
+    volumes:
+      - ${UPSTREAM_REPO_PATH:-../asciiswarm_upstream.git}:/upstream
+      - ./agent_logs:/agent_logs
+    environment:
+      - ANTHROPIC_API_KEY
+      - MAX_ITERATIONS=${MAX_ITERATIONS:-20}
+
+volumes: {}
