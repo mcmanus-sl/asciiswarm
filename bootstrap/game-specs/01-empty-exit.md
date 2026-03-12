@@ -43,7 +43,7 @@ None. No entity has autonomous behavior.
 Player walks onto the exit tile. Triggered by collision handler above.
 
 ## Lose Condition
-None. This game cannot be lost. (If using a `TimeLimit` wrapper, truncation is handled externally — the game itself never calls `end_game('lost')`.)
+None. This game cannot be lost. The engine truncates at `max_turns` (200) — the game itself never calls `end_game('lost')`.
 
 ## RL Evaluation Criteria
 
@@ -54,5 +54,5 @@ None. This game cannot be lost. (If using a `TimeLimit` wrapper, truncation is h
 | PPO learning delta (100k - 10k) | >30% |
 
 ## Notes
-- Use `TimeLimit` Gymnasium wrapper with `max_episode_steps=200` to prevent infinite episodes.
+- The engine natively truncates at `max_turns=200` — no external `TimeLimit` wrapper needed.
 - Spawning uses `env.random()` for deterministic placement.

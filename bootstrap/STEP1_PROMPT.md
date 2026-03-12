@@ -64,13 +64,14 @@ Initialize a Python project (pytest for testing, gymnasium and numpy as dependen
   - `'scalars'`: `gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(3 + len(config['player_properties']),), dtype=np.float32)` — normalized grid dimensions, turn number, and player properties. Uses infinite bounds because even clamped values can hit floating-point edge cases (e.g., turn 1001/1000 = 1.001) that crash SB3's strict bounds checking. The neural net doesn't use the Space bounds — it only cares about the actual numbers.
   This Dict structure lets SB3's `MultiInputPolicy` automatically apply a CNN to the grid (preserving spatial locality) and an MLP to the scalars. A flat 1D observation would destroy all spatial structure and make pathfinding unlearnable.
 - `step(action: int)` → `(obs, reward, terminated, truncated, info)`
-  - Resets `self._current_step_reward = 0.0` at the start.
+  - **Early exit guard:** If `status != 'playing'` at the very start of `step()` (game was already over before this call), immediately return `(_get_obs(), 0.0, True, False, info)` without calling `handle_input` or computing rewards. The terminal reward is a one-time payout on the exact step the game ends — calling `step()` again must not award another +10.0.
+  - Resets `self._current_step_reward = 0.0`.
   - The kernel has a built-in listener for `reward` events that adds `payload['amount']` to `self._current_step_reward`.
   - Translates the int action to a string via `ACTION_MAP`.
   - Calls `handle_input(action_string)`.
   - Computes reward additively: start with `config['step_penalty']` + `self._current_step_reward`. Then, if `status == 'won'`, add +10.0. If `status == 'lost'`, add -10.0. Terminal rewards must massively outweigh cumulative step penalties — otherwise PPO learns to die instantly because `-10.01` (1-step death) beats `-3.0` (400-step win with step_penalty=-0.01). This ensures intermediate rewards emitted during the winning/losing turn are never silently discarded.
   - `terminated = (status != 'playing')`.
-  - `truncated = False` (the environment never truncates; external wrappers like `TimeLimit` can add this).
+  - `truncated = (turn_number >= config['max_turns'])`. The environment MUST natively enforce its own turn limit. Without this, evaluation scripts that loop `while not (terminated or truncated)` will hang forever on games where the random agent never triggers a win/loss.
   - `info = {'turn': turn_number, 'status': status}`.
   - Returns the observation via `_get_obs()`.
 - `reset(seed=None, options=None)` → `(obs, info)`
@@ -105,7 +106,7 @@ The kernel merges the game's `GAME_CONFIG` with `DEFAULT_GAME_CONFIG` from types
   - A position `(x, y)`.
   - A `glyph`: single character for ASCII rendering.
   - A `z_order`: int for rendering (highest z on top).
-  - A `properties` dict (`dict[str, Any]`).
+  - A `properties` dict (`dict[str, Any]`). **Serialization guardrail:** Properties MUST be strictly JSON-serializable primitives (`int`, `float`, `str`, `bool`, `list`, `dict`). Never store Entity instances or functions in properties. If an entity needs to reference another entity, store its string ID (e.g., `entity.set('target', player.id)`, not `entity.set('target', player)`).
 - `env.create_entity(type, x, y, glyph, tags, z_order=0, properties=None)` → Entity
   - `tags` is required. The kernel validates that every tag is in the game's declared tag list (`config['tags']`). Raises `ValueError` for unknown tags.
 - `env.destroy_entity(id)` → None
@@ -160,7 +161,9 @@ The kernel merges the game's `GAME_CONFIG` with `DEFAULT_GAME_CONFIG` from types
 ## Core: State Serializer
 
 - `env.serialize_state()` → a plain dict (JSON-serializable) containing: grid dimensions, all entities with their full state (including tags), all registered behavior type→handler mappings are NOT serialized (they are re-registered by the setup function on load), the PRNG state, the entity ID counter, the turn number, and the game status.
+- **PRNG serialization guardrail:** `random.getstate()` returns a tuple containing an inner tuple of integers. `json.dumps()` converts all tuples to lists. Inside `load_state`, you MUST manually convert the parsed PRNG state back to a nested tuple before calling `random.setstate()`, otherwise Python throws `TypeError: argument must be a tuple`. LLMs miss this 100% of the time.
 - `env.load_state(state: dict)` → restores from a serialized state. Must re-instantiate actual Entity class instances with working methods. Raw dicts are not sufficient.
+- **Hydration guardrail:** Do NOT call `setup(env)` inside `load_state`. Assume the environment has already been initialized (e.g., via a previous `reset()`). `load_state` must simply clear the current entity list, re-instantiate Entity class instances from the dict data, and overwrite the turn number, ID counter, status, and PRNG state. If you call `setup()` again, it will re-spawn all entities on top of the loaded ones — doubling the player, walls, and enemies.
 
 ### Observation (`_get_obs`)
 
@@ -300,6 +303,11 @@ Write thorough tests for every kernel primitive. These tests are the foundation 
 - reset() without seed produces different random layouts across episodes (PRNG continues, not re-seeded)
 - reset() clears all event handlers — no duplicate callback accumulation across episodes
 - reset() validates player singleton — raises if no player or multiple players after setup
+- step() after game already ended returns reward=0.0 (no double terminal reward)
+- step() sets truncated=True when turn_number >= max_turns
+- Serializer round-trip: PRNG tuple/list conversion handled correctly (no TypeError on setstate)
+- load_state does not call setup() — no duplicate entity spawning
+- Entity properties containing non-JSON-serializable values (e.g., Entity references) are caught
 - _get_obs() returns dict with 'grid' and 'scalars' numpy arrays
 - _get_obs() is deterministic: same state = same output
 - _get_obs() grid channels correctly reflect entity tag positions with spatial locality
