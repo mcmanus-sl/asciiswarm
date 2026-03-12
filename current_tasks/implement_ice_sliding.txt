@@ -1,1 +1,0 @@
-Implementing game 06: Ice Sliding puzzle where player slides until hitting obstacles.

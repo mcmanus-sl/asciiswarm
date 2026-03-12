@@ -9,6 +9,14 @@ Tracking file for agent swarm progress. Agents update this file with status of t
 - **Full suite**: 203/203 pass
 - **Notes**: 12x12 grid with cross-pattern interior walls. Player at (6,6), chaser at (1,1), patroller at (10,1). Dots fill all empty cells. Chaser uses Manhattan distance pursuit (prefers horizontal on ties). Patroller follows rectangular patrol path (9 steps per direction). Collision with ghost = loss. Collect all dots = win. Per-dot reward +0.05.
 
+## Game 06: Ice Sliding
+- **Status:** DONE
+- All 207 tests pass (full suite including kernel + all games)
+- Random agent: 0 crashes, 100% termination rate, ~80% win rate (1000 episodes)
+- Solvability verified via ice-sliding BFS on every seed
+- Hardcoded fallback layout if procedural generation fails after 100 attempts
+- Exit invariants + 5 game-specific invariants
+
 ## Game 07: Hunger Clock
 - **Status:** COMPLETE
 - **File:** `games/07_hunger_clock.py`
