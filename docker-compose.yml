@@ -7,5 +7,5 @@ services:
     environment:
       - ANTHROPIC_API_KEY
       - MAX_ITERATIONS=${MAX_ITERATIONS:-20}
-
-volumes: {}
+    # Each scaled replica gets a unique hostname (agent-1, agent-2, ...)
+    # which start_agent.sh uses as AGENT_ID for logs and git author.
