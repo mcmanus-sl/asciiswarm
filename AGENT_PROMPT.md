@@ -62,6 +62,12 @@ If your game has no exit entity, don't add exit invariants.
    - Run the random agent fuzz test for your game explicitly to ensure no crashes.
    - Run the invariant tests.
 5. **Verify:** Run the full test suite (`python run_tests.py`). All must pass.
-6. **Finish:** Commit your game, remove your lock file from `current_tasks/`, update `PROGRESS.md` with your status, and `git push`.
+6. **RL Evaluate:** Run `python evaluate_game.py YOUR_GAME_NAME --skip-ppo` first (fast — random agent + invariants only). If it passes, run `python evaluate_game.py YOUR_GAME_NAME` (full eval with PPO, takes a few minutes). Read the JSON output. If any layer fails, fix your game and re-run. Common fixes:
+   - Random agent crashes → broken game logic, test more seeds
+   - PPO learning delta ≤ 0 → reward too sparse, add intermediate `env.emit('reward', ...)` for subgoals
+   - PPO can't learn → grid too large, too many enemies, reduce difficulty
+   - Invariant failure → fix the invariant or your setup logic
+   **Do not push until the full eval passes.**
+7. **Finish:** Commit your game, remove your lock file from `current_tasks/`, update `PROGRESS.md` with your status, and `git push`.
 
 If you get stuck, write your findings in `PROGRESS.md` so the next agent doesn't repeat your mistakes. Do your job, trust the mechanical tests, and do not modify the kernel.
