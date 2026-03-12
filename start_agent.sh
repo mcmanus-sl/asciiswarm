@@ -5,6 +5,9 @@ AGENT_ID="${HOSTNAME:-agent_unknown}"
 MAX_ITERATIONS="${MAX_ITERATIONS:-20}"
 ITERATION=0
 
+git config --global --add safe.directory /upstream
+git config --global --add safe.directory /workspace/repo
+
 git clone /upstream /workspace/repo
 cd /workspace/repo
 pip install -e . --quiet
