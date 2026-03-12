@@ -59,3 +59,11 @@ Tracking file for agent swarm progress. Agents update this file with status of t
 - **Tests:** `tests/games/test_10_farming_and_growth.py` (19 tests, all passing)
 - **Full suite:** 263/263 passed
 - **Notes:** 14x14 grid. Player starts in farmhouse (top-left). Seedbag at (2,5) gives 6 seeds. 3x3 soil patch at center (5-7, 5-7). Plant seeds via interact on soil, sprouts grow to mature after 15 turns. Harvest by walking onto mature crops. Deliver crops to bin at (12,1) via interact. Win by delivering 5 crops. No exit entity — game uses pickup tags on seedbag/mature for distance shaping. 5 game-specific invariants.
+
+## Game 13: Ecology & Spawning
+- **Status:** COMPLETE
+- **File:** `games/13_ecology_and_spawning.py`
+- **Tests:** `tests/games/test_13_ecology_and_spawning.py` (15 tests, all passing)
+- **Full suite:** 318/318 passed
+- **RL Eval:** Random agent: 0 crashes, 100% termination, 0% win. PPO: 14% early -> 41% final, delta=0.27. Invariants: 9/9 passed.
+- **Notes:** 20x20 grid. Player at bottom-left, exit at top-right. 8-10 rabbits (prey, reproduce near bushes every 20 turns, cap 15), 2-3 wolves (predators, hunt rabbits within 5 tiles, reproduce every 40 turns, cap 5). Hunger clock: food -1 every 3 turns, hunting rabbits +3 food. Wolf combat: player -2hp, wolf -1hp per hit. Rabbits flee wolves within 3 tiles. 5-7 bushes enable rabbit reproduction. Exit tagged for distance shaping. 6 game-specific invariants + exit_exists.
