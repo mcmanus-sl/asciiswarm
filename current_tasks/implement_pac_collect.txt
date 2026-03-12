@@ -1,1 +1,0 @@
-Implementing game 05: Pac-Man Collect - collection game with dots, chaser ghost, and patroller ghost.
