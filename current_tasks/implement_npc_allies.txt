@@ -1,1 +1,0 @@
-Implementing game 12: NPC Allies & Orders - command 3 allies (follow/guard/harvest), build barricades, fight raiders, reach exit.
