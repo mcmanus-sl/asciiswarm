@@ -104,8 +104,8 @@ These five rules cannot be overridden by any game:
 Reward is computed **additively** each step — all components are summed, never exclusive:
 - Start with `config['step_penalty']` (default `-0.01`)
 - Add any intermediate `reward` events emitted during the turn (e.g., +0.1 for picking up an item)
-- If `env.status == 'won'`, add `+1.0`
-- If `env.status == 'lost'`, add `-1.0`
+- If `env.status == 'won'`, add `+10.0`
+- If `env.status == 'lost'`, add `-10.0`
 
 This ensures intermediate rewards emitted on the same turn as a terminal event are never silently discarded.
 
@@ -366,7 +366,7 @@ A script `evaluate_game.py` that:
    - Average episode length.
    - Pass criteria: zero crashes, termination rate > 80%, win rate between the game spec's declared bounds.
 
-2. **Layer 2 — PPO Training.** Trains a Stable-Baselines3 PPO agent (`MultiInputPolicy` — automatically applies CNN to the grid observation and MLP to scalars) for 100k timesteps. Records:
+2. **Layer 2 — PPO Training.** Trains a Stable-Baselines3 PPO agent (`MultiInputPolicy` — automatically applies CNN to the grid observation and MLP to scalars) for 100k timesteps. **CRITICAL: Because game grids are small (e.g., 8×8 to 30×20), SB3's default NatureCNN will crash with negative dimension errors (it hardcodes kernel_size=8, stride=4 designed for 84×84 Atari frames). CLAUDE CODE must implement a custom `BaseFeaturesExtractor` (e.g., 2-layer CNN with kernel_size=3, stride=1, padding=1) and pass it via `policy_kwargs`.** Records:
    - Win rate at 10k steps.
    - Win rate at 100k steps.
    - Learning delta (win rate at 100k minus win rate at 10k).

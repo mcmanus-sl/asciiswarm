@@ -61,21 +61,21 @@ Initialize a Python project (pytest for testing, gymnasium and numpy as dependen
 - `ACTION_MAP`: a dict mapping int → string, built from `config['actions']`. E.g., if `actions = ['move_n', 'move_s', 'move_e', 'move_w', 'interact', 'wait']`, then `ACTION_MAP = {0: 'move_n', 1: 'move_s', ..., 5: 'wait'}`.
 - `observation_space`: `gymnasium.spaces.Dict` containing two keys:
   - `'grid'`: `gymnasium.spaces.Box(low=0.0, high=1.0, shape=(len(config['tags']), height, width), dtype=np.float32)` — channel-first spatial tag map.
-  - `'scalars'`: `gymnasium.spaces.Box(low=0.0, high=1.0, shape=(3 + len(config['player_properties']),), dtype=np.float32)` — normalized grid dimensions, turn number, and player properties.
+  - `'scalars'`: `gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(3 + len(config['player_properties']),), dtype=np.float32)` — normalized grid dimensions, turn number, and player properties. Uses infinite bounds because even clamped values can hit floating-point edge cases (e.g., turn 1001/1000 = 1.001) that crash SB3's strict bounds checking. The neural net doesn't use the Space bounds — it only cares about the actual numbers.
   This Dict structure lets SB3's `MultiInputPolicy` automatically apply a CNN to the grid (preserving spatial locality) and an MLP to the scalars. A flat 1D observation would destroy all spatial structure and make pathfinding unlearnable.
 - `step(action: int)` → `(obs, reward, terminated, truncated, info)`
   - Resets `self._current_step_reward = 0.0` at the start.
   - The kernel has a built-in listener for `reward` events that adds `payload['amount']` to `self._current_step_reward`.
   - Translates the int action to a string via `ACTION_MAP`.
   - Calls `handle_input(action_string)`.
-  - Computes reward additively: start with `config['step_penalty']` + `self._current_step_reward`. Then, if `status == 'won'`, add +1.0. If `status == 'lost'`, add -1.0. This ensures intermediate rewards emitted during the winning/losing turn are never silently discarded.
+  - Computes reward additively: start with `config['step_penalty']` + `self._current_step_reward`. Then, if `status == 'won'`, add +10.0. If `status == 'lost'`, add -10.0. Terminal rewards must massively outweigh cumulative step penalties — otherwise PPO learns to die instantly because `-10.01` (1-step death) beats `-3.0` (400-step win with step_penalty=-0.01). This ensures intermediate rewards emitted during the winning/losing turn are never silently discarded.
   - `terminated = (status != 'playing')`.
   - `truncated = False` (the environment never truncates; external wrappers like `TimeLimit` can add this).
   - `info = {'turn': turn_number, 'status': status}`.
   - Returns the observation via `_get_obs()`.
 - `reset(seed=None, options=None)` → `(obs, info)`
-  - If `seed` is provided, re-seeds the PRNG.
-  - Clears all state (entities, grid, behaviors, event handlers, turn number, status).
+  - If `seed` is provided, re-seeds the PRNG. **CRITICAL: If `seed` is `None`, do NOT reset the PRNG.** Allow it to continue its sequence so every episode generates a different random layout. If you re-seed to the stored instance seed every reset, every episode produces the identical dungeon — the agent memorizes one path and fails to generalize.
+  - Clears all state (entities, grid, behaviors, turn number, status). **MEMORY LEAK GUARD: You MUST explicitly clear all registered event handlers/callbacks in the Event System.** Because `setup(env)` is called every reset and re-registers handlers, failing to wipe them means by episode 500 every collision fires 500 duplicate callbacks, grinding the CPU to a halt.
   - Calls the game module's `setup(env)` to rebuild the world from scratch.
   - Validates that exactly one entity tagged `player` exists (the player singleton rule). Raises an error if violated.
   - Returns the initial observation.
@@ -171,6 +171,7 @@ The observation is a `dict` with two keys, matching the `Dict` observation space
 **`'grid'`** — `np.ndarray` of shape `(len(obs_tags), height, width)`, dtype float32, channel-first:
 - For each tag (channel), for each cell `(y, x)`: `1.0` if any entity in that cell has that tag, `0.0` otherwise.
 - This preserves spatial locality so a CNN can learn "wall is north of player" from adjacency in the tensor, rather than requiring the MLP to memorize that index 10 and index 40 are neighbors.
+- **Performance guardrail:** Do NOT build this array by iterating over every cell and every tag (O(width×height×tags)). Instead, initialize `np.zeros(shape)`, then iterate over `env.get_all_entities()` exactly once. For each entity, look up its tag indices and set `grid[tag_index, ent.y, ent.x] = 1.0`. This O(entities) approach is critical for RL training speed — the naive nested loop runs 300M iterations over 100k steps on a 30×20 grid, turning a 2-minute evaluation into a 2-hour one.
 
 **`'scalars'`** — `np.ndarray` of shape `(3 + len(player_properties),)`, dtype float32:
 1. **Grid dimensions (normalized):** `width / 100.0`, `height / 100.0` — 2 values.
@@ -292,10 +293,12 @@ Write thorough tests for every kernel primitive. These tests are the foundation 
 - step() returns correct 5-tuple types
 - step() returns terminated=True when game has ended
 - step() reward is additive: step_penalty + intermediate rewards + terminal reward (all summed, not exclusive)
-- step() on winning turn includes both intermediate reward events AND +1.0 terminal reward
+- step() on winning turn includes both intermediate reward events AND +10.0 terminal reward
 - step() accumulates reward events via built-in listener
 - reset() restores to initial state
 - reset() with seed produces deterministic initial state
+- reset() without seed produces different random layouts across episodes (PRNG continues, not re-seeded)
+- reset() clears all event handlers — no duplicate callback accumulation across episodes
 - reset() validates player singleton — raises if no player or multiple players after setup
 - _get_obs() returns dict with 'grid' and 'scalars' numpy arrays
 - _get_obs() is deterministic: same state = same output
