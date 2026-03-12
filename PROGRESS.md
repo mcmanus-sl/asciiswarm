@@ -31,6 +31,13 @@ Tracking file for agent swarm progress. Agents update this file with status of t
 - **Full suite:** 207/207 passed
 - **Notes:** Player at (0,13) must reach exit at (13,0) before food runs out. 10-15 food pickups restore 5 food each (cap 20). 3-5 wall clusters with BFS reachability check. Food decreases by 1 per turn. Manhattan distance is 26 but starting food is 20, so player must eat to survive.
 
+## Game 11: Multi-Floor Dungeon
+- **Status:** COMPLETE
+- **File:** `games/11_multi_floor_dungeon.py`
+- **Tests:** `tests/games/test_11_multi_floor_dungeon.py` — 16/16 pass
+- **Full suite:** 286/286 passed
+- **Notes:** 36x12 grid (three 12x12 zones side by side). Player starts in floor 1. Stairs_down/stairs_up pairs connect floors via interact action (direct teleport, no move_entity). Floor 1: 1-2 wanderers, 1 potion. Floor 2: 2-3 chasers, 1-2 potions, 1 key. Floor 3: 1 sentinel + 2 chasers, 1 potion, locked exit + exit. Combat same as game 04 (player atk=2). Chaser chases on same floor within Manhattan 6. Sentinel stationary, alerts within Manhattan 3. Intermediate rewards: +0.2 stairs, +0.1 pickup/kill, +0.3 unlock door. Tags: pickup for key/potions, exit for goal. Exit invariant (exists only, not reachable — blocked by locked_exit).
+
 ## Game 09: Inventory & Crafting
 - **Status:** COMPLETE
 - **File:** `games/09_inventory_crafting.py`

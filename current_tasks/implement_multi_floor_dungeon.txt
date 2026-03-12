@@ -1,1 +1,0 @@
-Implementing game 11: Multi-Floor Dungeon - 3-floor side-by-side dungeon with stairs, combat, keys, and locked exit.
