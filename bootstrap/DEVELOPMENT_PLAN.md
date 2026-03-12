@@ -1,17 +1,21 @@
-# AsciiSwarm — Development Plan
+# ASCII Game Engine — Development Plan
 
-## What this project is actually testing
+## The Experiment
 
-You're not testing whether Claude can build a game engine. You're testing whether the Carlini loop — swarm of agents, task locking, mechanical tests, autonomous convergence — works for creative software (games) instead of well-specified software (compilers). The engine is infrastructure. Every hour spent building a custom kernel is an hour not spent on the actual experiment.
+This project tests whether the Carlini agent-swarm methodology (parallel autonomous Claude instances, task locking via git, mechanical test convergence) works for creative software — specifically, game development.
 
-Carlini didn't build Rust. He used Rust as the existing, trusted platform and spent his effort on the test harness and the task decomposition. The kernel here plays the same role — it must be small, trusted, and boring.
+The product is a **game engine**. The test suite is **multiple games**. The oracle is **an RL agent that learns to play them**.
+
+In Carlini's C compiler experiment, GCC defined "correct." The compiler's job was to produce binaries that behaved identically to GCC's output. Here, the RL agent defines "functional." A game's job is to be learnable by PPO given a fixed engine contract. If the RL agent's win rate climbs during training, the game works. If it doesn't, the game is broken.
+
+---
 
 ## Roles
 
 - **HUMAN**: The developer. Runs Claude Code, reviews output, makes design decisions, builds infrastructure.
-- **CLAUDE CODE**: AI pair-programmer. Works under HUMAN supervision during Steps 0–6.
-- **AGENT SWARM**: Future autonomous Claude instances. They write game modules (userland) against the kernel. They do not exist until Step 7.
-- **RL EVALUATOR**: A layered evaluation system (random agent, trained RL agent, invariant checks) that validates games quantitatively. Built in Steps 2, 5, and 6.
+- **CLAUDE CODE**: AI pair-programmer. Works under HUMAN supervision during Steps 1–6.
+- **AGENT SWARM**: Future autonomous Claude instances. They write games (userland) against the kernel. They do not exist until Step 7.
+- **RL EVALUATOR**: The oracle. A pipeline that trains a PPO agent against any game built on the engine and produces quantitative pass/fail verdicts.
 
 ## Supervision Model
 
@@ -19,18 +23,97 @@ Carlini didn't build Rust. He used Rust as the existing, trusted platform and sp
 |------|-------------------|-------------|
 | 0. Game specs | HUMAN | No — HUMAN writes these |
 | 1. Kernel | HUMAN + CLAUDE CODE | No — pair programming |
-| 2. Test harness + random agent | HUMAN + CLAUDE CODE | No — pair programming |
+| 2. Mechanical tests | HUMAN + CLAUDE CODE | No — pair programming |
 | 3. Agent prompt | HUMAN | No — HUMAN writes this |
 | 4. Infrastructure | HUMAN | No — HUMAN builds this |
 | 5. Reference games | HUMAN + CLAUDE CODE | No — pair programming |
 | 6. RL evaluation pipeline | HUMAN + CLAUDE CODE | No — pair programming |
 | 7. Swarm on userland | AGENT SWARM | Yes — autonomous |
 
-The critical lesson from Carlini's C compiler project: Steps 0–2 are where HUMAN spends disproportionate time. They are not autonomous. Everything after Step 4 benefits from autonomy. Everything before it needs HUMAN's hands on it.
+Steps 1 and 2 are where HUMAN spends disproportionate time. They are not autonomous. Everything after Step 4 benefits from autonomy. Everything before it needs HUMAN's hands on it.
+
+## How to use this document
+
+This file and STEP1_PROMPT.md are the complete bootstrap for the project. After Step 1, HUMAN tells CLAUDE CODE: "Read DEVELOPMENT_PLAN.md, proceed to Step N." Each step below has enough detail for CLAUDE CODE to execute.
+
+---
+
+## The Engine Contract
+
+These are the structural rules that make the RL oracle possible. They are baked into the kernel. Every game built on the engine must obey them. The swarm cannot change them.
+
+### Per-Game Configuration via `GAME_CONFIG`
+
+Every game module exports a `GAME_CONFIG` dict that declares the game's action space, observation tags, player properties, grid dimensions, and tuning parameters. The kernel builds Gymnasium spaces dynamically from this config. There is no global fixed tensor shape — each game defines its own.
+
+```python
+# Example: a game module declares its config
+GAME_CONFIG = {
+    'actions': ['move_n', 'move_s', 'move_e', 'move_w', 'interact', 'wait'],
+    'tags': ['player', 'solid', 'hazard', 'pickup', 'exit', 'npc'],
+    'grid': (8, 8),
+    'max_turns': 200,
+    'step_penalty': -0.01,
+    'player_properties': [
+        {'key': 'health', 'max': 10},
+    ],
+}
+
+def setup(env):
+    # Register entities, behaviors, event handlers
+    ...
+```
+
+The kernel provides **standard defaults** for any keys omitted from `GAME_CONFIG`:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `actions` | `['move_n', 'move_s', 'move_e', 'move_w', 'interact', 'wait']` | Valid action strings |
+| `tags` | `['player', 'solid', 'hazard', 'pickup', 'exit', 'npc']` | Valid entity tags |
+| `grid` | `(16, 16)` | `(width, height)` |
+| `max_turns` | `1000` | Turn limit (for observation normalization) |
+| `step_penalty` | `-0.01` | Per-step reward penalty |
+| `player_properties` | `[]` | Properties included in observation vector |
+
+Games can use all defaults, override some, or replace everything. A simple game might only set `grid` and `max_turns`. A complex game might declare custom actions (`'shoot_n'`, `'craft'`, `'stealth'`) and custom tags (`'ammo'`, `'craftable'`, `'hidden'`).
+
+The kernel:
+- Builds `action_space = Discrete(len(config['actions']))` and `ACTION_MAP` from the config.
+- Builds `observation_space` as a `Dict` with a channel-first `'grid'` tensor (for CNN spatial reasoning) and a `'scalars'` vector (for MLP). SB3's `MultiInputPolicy` handles this natively.
+- Validates entity tags against the game's declared tag list (not a global constant).
+- Validates actions against the game's declared action list.
+
+PPO trains from scratch per game — there is no shared agent, no transfer learning, no reason for identical tensor shapes across games. The shape only needs to be constant within a single game across timesteps.
+
+### Immutable Structural Rules
+
+These five rules cannot be overridden by any game:
+
+1. **Player singleton.** Exactly one entity tagged `player` must exist after `setup()` completes. The kernel validates this on `reset()`.
+
+2. **Termination via `end_game()`.** Games must call `env.end_game('won')` or `env.end_game('lost')` to signal termination. The Gym `step()` method reads this. There is no other way to end a game.
+
+3. **Config declares truth.** The kernel validates entities and actions against the game's own `GAME_CONFIG` declaration. If a game creates an entity with a tag not in its declared tag list, or receives an action not in its declared action list, the kernel raises an error. The game's config is its contract with the kernel.
+
+4. **Game module interface.** Every game module must export `GAME_CONFIG` (dict) and `setup(env)` (callable). Missing either raises an error on load.
+
+5. **Determinism.** Given the same seed, `setup()` must produce the same initial state. Given the same state and action sequence, the game must produce the same outcome. All randomness goes through `env.random()`.
+
+### Universal Reward Signal
+
+Reward is computed **additively** each step — all components are summed, never exclusive:
+- Start with `config['step_penalty']` (default `-0.01`)
+- Add any intermediate `reward` events emitted during the turn (e.g., +0.1 for picking up an item)
+- If `env.status == 'won'`, add `+1.0`
+- If `env.status == 'lost'`, add `-1.0`
+
+This ensures intermediate rewards emitted on the same turn as a terminal event are never silently discarded.
+
+---
 
 ### Why Python, not TypeScript
 
-The RL pipeline is Python (Stable-Baselines3, Gymnasium). If the kernel is TypeScript, every game needs a Python↔TypeScript bridge (subprocess + JSON, or WASM). This adds latency, debugging pain, and serialization bugs at the boundary — all for zero benefit. The kernel should be Python so that the engine IS the Gymnasium environment. No wrapper, no FFI, no bridge. `PPO("MlpPolicy", YourGameEnv()).learn(100_000)` just works.
+The RL pipeline is Python (Stable-Baselines3, Gymnasium). If the kernel is TypeScript, every game needs a Python↔TypeScript bridge (subprocess + JSON, or WASM). This adds latency, debugging pain, and serialization bugs at the boundary — all for zero benefit. The kernel should be Python so that the engine IS the Gymnasium environment. No wrapper, no FFI, no bridge. `PPO("MultiInputPolicy", YourGameEnv()).learn(100_000)` just works.
 
 ### Why RL instead of Claude-as-judge
 
@@ -46,44 +129,45 @@ class GridGameEnv(gymnasium.Env):
     # reset(), step(), observation_space, action_space are native.
 ```
 
-Games are Python modules — a `setup(env)` function that registers entity types, behaviors, spawning rules, and termination conditions. Each game is one file. The swarm writes these files.
-
-## How to use this document
-
-This file and STEP1_PROMPT.md are the complete bootstrap for the project. After Step 1, HUMAN tells CLAUDE CODE: "Read DEVELOPMENT_PLAN.md, proceed to Step N." Each step below has enough detail for CLAUDE CODE to execute.
+Games are Python modules — a `GAME_CONFIG` dict plus a `setup(env)` function that registers entity types, behaviors, spawning rules, and termination conditions. Each game is one file. The swarm writes these files.
 
 ---
 
 ## Step 0: HUMAN writes game specs
 
-**HUMAN does this alone** — no CLAUDE CODE needed.
+**HUMAN does this alone** before any code is written.
 
-HUMAN writes 5–8 one-page game specs at escalating complexity. These are the "test programs" — like Carlini's progression from test suites to SQLite to Redis to Linux. The number of games is the scaling knob for the experiment.
+HUMAN writes 5–8 one-page game specifications at escalating complexity. These are the "test programs" — like Carlini's progression from test suites to SQLite to Redis to Linux. Each spec defines:
+
+- A title and one-paragraph description.
+- Grid dimensions.
+- `GAME_CONFIG` block (actions, tags, player_properties, grid, max_turns, step_penalty).
+- Entity types and their tags.
+- Player properties (the ones that appear in the observation vector).
+- Behavior descriptions for each entity type (what it does each turn).
+- The `interact` mapping (what happens when the player uses `interact` near each entity type).
+- Win condition (what triggers `env.end_game('won')`).
+- Lose condition (what triggers `env.end_game('lost')`).
+- RL evaluation criteria: expected random-agent win rate range, minimum PPO learning delta (win rate at 100k steps minus win rate at 10k steps).
 
 ### Suggested progression
 
-1. **Walk to exit** — empty grid, player walks to goal tile. Simplest possible game.
-2. **Avoid patrol** — walk to exit, one patrolling enemy to dodge.
-3. **Keys and doors** — multi-room dungeon, locked doors, keys to find.
-4. **Combat roguelike** — health, potions, three enemy types with different behaviors.
-5. **Sokoban puzzle** — push boxes onto targets.
-6. **Tower defense** — enemies spawn in waves, player places turrets.
-7. **Stealth game** — enemies with sight cones, player must avoid detection.
-8. **Survival** — hunger, crafting, resource gathering, day/night cycle.
+| # | Game | Complexity | Purpose |
+|---|------|-----------|---------|
+| 1 | **Empty Exit** | Trivial | Walk to exit on empty grid. Validates pipeline. |
+| 2 | **Dodge** | Low | Walk to exit, one patrolling enemy. Tests hazard avoidance. |
+| 3 | **Lock & Key** | Medium | Find key (pickup), unlock door (solid→removed), reach exit. Tests interact + state change. |
+| 4 | **Dungeon Crawl** | Medium-High | Multi-room, 3 enemy types, health, potions, combat. Tests combat + resource management. |
+| 5 | **Sokoban** | Medium | Push boxes onto targets. Tests spatial reasoning. |
+| 6 | **Wave Survival** | High | Enemies spawn in waves. Survive N turns. Tests sustained play. |
+| 7 | **Stealth** | High | Enemies have sight cones. Reach exit unseen. Tests avoidance. |
+| 8 | **Gather & Craft** | High | Collect resources, craft tools, open path to exit. Tests multi-step planning. |
 
-Games 1–3 are reference games that HUMAN builds in Step 5. Games 4–8 are swarm tasks for Step 7.
+Games 1–3 are built by HUMAN + CLAUDE CODE as reference implementations in Step 5. Games 4–8 are swarm tasks in Step 7.
 
-### What each spec must include
+**Done when**: Game spec files exist in `game-specs/` and each spec is complete enough that a developer could implement it without asking questions. Each spec includes a `GAME_CONFIG` block.
 
-- Grid dimensions and layout description.
-- Entity types with glyphs and behaviors.
-- Valid player actions.
-- Win condition and lose condition.
-- RL evaluation criteria: expected random-agent crash rate (should be 0), approximate PPO win rate range after 500 episodes (e.g., "40–70%"), and any degenerate strategies to watch for.
-
-**Done when**: `game_specs/` directory contains 5–8 numbered spec files.
-
-**Output**: `game_specs/01_walk_to_exit.md`, `game_specs/02_avoid_patrol.md`, etc.
+**Output**: `game-specs/01-empty-exit.md` through `game-specs/08-gather-craft.md`
 
 ---
 
@@ -91,15 +175,17 @@ Games 1–3 are reference games that HUMAN builds in Step 5. Games 4–8 are swa
 
 **HUMAN tells CLAUDE CODE**: Paste the contents of STEP1_PROMPT.md.
 
-HUMAN supervises CLAUDE CODE to build the kernel — a Python class that subclasses `gymnasium.Env` and provides the grid, entity system, turn loop, event system, behavior hooks, ASCII renderer, and state serializer. This is the stable foundation that AGENT SWARM will later write game logic against — equivalent to Rust in Carlini's compiler project. Everything else trusts this layer.
+HUMAN supervises CLAUDE CODE to build the kernel. This is the stable foundation that AGENT SWARM will later write games against. The kernel IS a Gymnasium environment — games built on it are automatically RL-evaluable.
 
-The kernel should be ~500 lines. It is deliberately small. Full API spec is in STEP1_PROMPT.md.
+The kernel includes: the entity system (with semantic tags validated against `GAME_CONFIG`), the grid, the turn loop, the behavior registration system, the event system, the ASCII renderer, the state serializer, the Gym interface (`reset`, `step`, `observation_space`, `action_space` — all built dynamically from `GAME_CONFIG`), the seeded PRNG, and the game status primitive.
 
-HUMAN tests it, reviews it, owns it. This is a day or two of focused work, not a week. AGENT SWARM does not touch this unsupervised.
+Full API spec is in STEP1_PROMPT.md.
 
-**Done when**: All kernel tests pass. HUMAN has reviewed the code and is satisfied with the API surface. The kernel works as a Gymnasium environment (reset/step/observation_space/action_space all functional).
+HUMAN tests it, reviews it, owns it. AGENT SWARM does not touch this.
 
-**Output**: A tested, stable Python kernel with full test coverage. `pip install -e .` works.
+**Done when**: All kernel tests pass. HUMAN has reviewed the code and is satisfied with the API surface. A trivial game (place player, place exit, `end_game('won')` on collision) can be loaded and trained against with PPO for 10 episodes without crashing.
+
+**Output**: A tested, stable Python kernel with full test coverage.
 
 ---
 
@@ -107,49 +193,59 @@ HUMAN tests it, reviews it, owns it. This is a day or two of focused work, not a
 
 **HUMAN tells CLAUDE CODE**: "Read DEVELOPMENT_PLAN.md. We've completed Step 1 — the kernel is built and tested. Proceed to Step 2: build the expanded mechanical test harness."
 
-This is where Carlini spent most of his effort and said so explicitly. Step 1 includes basic kernel unit tests. Step 2 expands those into a comprehensive regression suite that AGENT SWARM will run before every commit.
+Step 1 includes basic kernel unit tests. Step 2 expands those into a comprehensive regression suite that AGENT SWARM will run before every commit.
 
 ### What CLAUDE CODE builds
 
 **Kernel stress tests** — edge cases the Step 1 tests didn't cover:
-- Create and destroy hundreds of entities rapidly. No memory leaks, no stale references.
+- Create and destroy hundreds of entities rapidly. No stale references.
 - Move entities to every boundary cell. Off-grid in every direction.
-- Fill a cell with 20+ entities. Z-order rendering still correct. Queries still correct.
+- Fill a cell with 20+ entities. Tag-based observation still correct. Z-order rendering still correct.
 - Register 50+ event handlers. All fire in order. Unsubscribe works mid-iteration.
 - Collision cancellation chains: handler A cancels, handler B would have fired — does it?
 - Serialize a world with 1000+ entities. Round-trip still byte-identical.
-- Load state, run 100 turns of random input with registered behaviors, serialize. Run the same 100 inputs again from the same loaded state. Output must be identical (determinism proof).
+- Load state, run 100 turns of random input, serialize. Run the same 100 inputs from the same loaded state. Output must be identical (determinism proof).
+- Verify `env.random()` produces same sequence after serialize → load round-trip.
+- Event cascade guard throws at configured max depth.
+- `end_game()` sets status correctly. Further `handle_input()` calls are no-ops after game ends.
+- Gym `step()` returns `terminated=True` when game has ended. `reset()` restores to initial state.
+
+**Random agent fuzz tests** — the first layer of the oracle:
+- Load any game module, run 1000 episodes of random valid actions.
+- Assert: no exceptions thrown during any episode.
+- Assert: every episode terminates within `max_turns` (from `GAME_CONFIG`, default 1000).
+- Assert: game status is always one of `'playing'`, `'won'`, `'lost'` — never corrupted.
+- Assert: observation shape is constant across all steps of all episodes.
+- Record: win rate, average episode length, distribution of terminal states.
+
+**Invariant test framework** — extensible by agents:
+- A base class / decorator that agents can use to register new invariant tests for their games.
+- Built-in invariants:
+  - Exactly one entity tagged `player` exists at game start.
+  - At least one entity tagged `exit` exists at game start.
+  - Every entity type used in the game has a registered behavior (or is inert by design, marked with an `inert` flag).
+  - The exit is reachable from the player's starting position (BFS over non-`solid` tiles).
+  - No entity has an empty tag list.
+- Game-specific invariants are added by the game module itself (e.g., "every room has at least one exit," "total enemies equals wave_count * enemies_per_wave").
 
 **Userland simulation tests** — tests that simulate what AGENT SWARM will actually do:
 - Register a behavior that moves an entity toward a target every turn. Run 10 turns. Verify positions.
-- Register a collision handler that destroys the mover (simulating a trap). Verify the entity is gone after the move.
+- Register a collision handler that destroys the mover (simulating a trap). Verify the entity is gone.
 - Register a collision handler that cancels the move (simulating a wall). Verify the entity stays.
-- Create a chain reaction: entity A's behavior creates entity B, entity B's behavior emits a custom event, that event's handler destroys entity A. Verify all of it resolves in one turn.
-- Register an input handler that creates an entity on action "place_bomb". Fire input. Verify entity exists.
+- Create a chain reaction: entity A's behavior creates entity B, B's behavior emits a custom event, that event's handler destroys A. Verify all resolves in one turn.
+- Register an input handler for `interact`. Fire it. Verify the handler ran.
+- Call `end_game('won')`. Verify Gym `step()` returns `terminated=True` and reward `+1.0`.
 
-**Gymnasium contract tests** — verify the kernel works as a proper Gym env:
-- `env.reset()` returns valid observation and info dict.
-- `env.step(action)` returns (obs, reward, terminated, truncated, info).
-- `observation_space.contains(obs)` is True for all observations.
-- `action_space.contains(action)` is True for all valid actions.
-- `check_env(env)` from Stable-Baselines3 passes.
-
-**Random agent fuzz tests** — Layer 1 of the RL evaluation stack, built early because it's cheap and catches crashes:
-- A test that feeds 1000 random valid actions into a game world with registered behaviors. Asserts: no exceptions thrown, world state valid after every turn, serializer round-trip still works after every turn.
-- Parameterized by seed for reproducibility. Different seeds on different runs.
-- This is the first gate on every commit. If random play crashes the game, nothing else matters.
-- Lives in `tests/test_random_agent.py`.
-
-**Test runner output format** — designed for AGENT SWARM consumption, not human consumption:
-- On success: one line per test file, e.g. `PASS tests/test_world.py (23 tests)`
-- On failure: `FAIL tests/test_world.py` followed by `ERROR: [test name] — [one-line reason]`
+**Test runner output format** — designed for AGENT SWARM consumption:
+- On success: one line per test file, e.g. `PASS kernel/world_test.py (23 tests)`
+- On failure: `FAIL kernel/world_test.py` followed by `ERROR: [test name] — [one-line reason]`
 - Summary line: `TOTAL: 247/250 passed`
 - All verbose output goes to a log file, not stdout. AGENT SWARM's context window must not be polluted.
-- Include a `--fast` flag that runs a deterministic 10% sample (different per agent via seed). AGENT SWARM uses `--fast` during development, full suite before pushing.
+- Include a `--fast` flag that runs a deterministic 10% sample. Seed is passed via `--seed N` CLI argument (default: hash of container hostname). AGENT SWARM uses `--fast` during development, full suite before pushing.
 
-**Done when**: The test suite has 200+ assertions, all pass, and the runner output is clean and parseable.
+**Done when**: The test suite has 200+ assertions, all pass, and the runner output is clean and parseable. The random agent fuzz test can load a trivial game and run 1000 episodes without error.
 
-**Output**: Expanded test suite in `tests/`. A test runner script with `--fast` and `--seed` flags.
+**Output**: Expanded test suite in `tests/`. A test runner script with `--fast` and `--seed` flags. The invariant test framework.
 
 ---
 
@@ -157,28 +253,27 @@ This is where Carlini spent most of his effort and said so explicitly. Step 1 in
 
 **HUMAN does this alone** — no CLAUDE CODE needed.
 
-HUMAN writes the prompt document that the agent loop feeds to every fresh AGENT SWARM instance. This is the equivalent of Carlini's agent prompt. It tells each agent:
+HUMAN writes the prompt document that the agent loop feeds to every fresh AGENT SWARM instance. It tells each agent:
 
 - What the project is and what the kernel API looks like (or where to find the docs).
-- What the current game spec is (or where to find it in `game_specs/`).
-- How to pick a task: check `current_tasks/` for what's already claimed, read progress docs, pick the next most obvious unclaimed task.
-- How to claim a task: write a file to `current_tasks/` (e.g., `current_tasks/implement_combat_roguelike.txt`) and push. If git rejects the push: run `git pull --rebase`. If the only conflict is in `current_tasks/` — the task was claimed by another agent; abort the rebase (`git rebase --abort`) and pick a different task. If the rebase is clean or conflicts are only in userland code — resolve conflicts, re-run `--fast` tests, and push again.
-- How to work: implement the game as a Python module in `games/`, run the mechanical tests with `--fast`, fix regressions, run the full suite before pushing.
-- How to finish: push to upstream, remove the task lock file, update progress docs with what was done and any known issues.
-- How to leave notes: maintain a `PROGRESS.md` and update it frequently. If stuck, document what was tried and what failed so the next agent in this container doesn't repeat the work.
-- What a game module looks like: a single Python file with a `setup(env)` function that registers entity types, behaviors, spawning rules, and termination conditions. Reference games in `games/reference/` are the examples to follow.
+- **The Engine Contract** (copied from this document): per-game `GAME_CONFIG` declarations, immutable structural rules, universal reward signal. Violating these is equivalent to writing invalid C — the oracle will reject it.
+- How to read a game spec: find your assigned game in `game-specs/`, implement it as a single Python module in `games/`.
+- How to pick a task: check `current_tasks/` for what's claimed, check which games in `game-specs/` don't have a passing implementation yet, pick one.
+- How to claim a task: write a file to `current_tasks/` (e.g., `current_tasks/implement_sokoban.txt`) and push. If git rejects the push: run `git pull --rebase`. If the only conflict is in `current_tasks/` — the task was claimed by another agent; abort the rebase (`git rebase --abort`) and pick a different task. If the rebase is clean or conflicts are only in userland code — resolve conflicts, re-run `--fast` tests, and push again.
+- How to work: implement the game module, run mechanical tests with `--fast`, run the random agent fuzz test on your game, run invariant tests, fix issues, run the full suite before pushing.
+- How to finish: push to upstream, remove the task lock file, update `PROGRESS.md`.
+- How to handle merge conflicts: pull, resolve, verify tests still pass, push.
+- How to leave notes: maintain `PROGRESS.md` — what was done, what was tried, what failed, known issues.
 
-**Done when**: AGENT_PROMPT.md is in the repo root and contains all of the above.
+**Done when**: `AGENT_PROMPT.md` is in the repo root and contains all of the above.
 
-**Output**: AGENT_PROMPT.md
+**Output**: `AGENT_PROMPT.md`
 
 ---
 
 ## Step 4: HUMAN sets up the infrastructure
 
 **HUMAN does this alone** — no CLAUDE CODE needed for infrastructure, though HUMAN may use CLAUDE CODE to help write scripts.
-
-HUMAN builds the agent loop and parallelism infrastructure. This is nearly identical to what Carlini did:
 
 ### The agent loop (per container)
 ```bash
@@ -198,6 +293,7 @@ done
 - A bare git repo mounted to `/upstream` in each container.
 - Each agent clones `/upstream` to `/workspace` on startup.
 - When done with a task, agent pushes from `/workspace` to `/upstream`.
+- Python environment with: `gymnasium`, `stable-baselines3`, `pytest`, `numpy` pre-installed.
 
 ### Task locking
 - Agent claims a task by writing a file to `current_tasks/` (e.g., `current_tasks/implement_combat_roguelike.txt`) containing a short description of the approach.
@@ -206,8 +302,7 @@ done
 
 ### How many agents
 - Start with 4. Scale to 8–16 once HUMAN is confident the test harness catches regressions.
-- More agents are only useful when there are many independent tasks. If agents start duplicating work, reduce count or decompose tasks further.
-- Each game spec is a naturally independent task — perfect parallelism. 8 game specs = 8 agents can work simultaneously with zero coordination overhead.
+- More agents only help when tasks are independent. If agents duplicate work, reduce count or add more game specs.
 
 **Done when**: HUMAN can spin up N containers and each one runs the loop, claims tasks, pushes code.
 
@@ -219,54 +314,38 @@ done
 
 **HUMAN tells CLAUDE CODE**: "Read DEVELOPMENT_PLAN.md. We've completed Steps 1–4. Proceed to Step 5: build the reference games."
 
-Carlini didn't need a reference implementation because GCC defined "correct output." This project has no equivalent oracle. So before AGENT SWARM runs, HUMAN and CLAUDE CODE hand-write the first 2–3 games from the game specs in `game_specs/`.
+HUMAN and CLAUDE CODE hand-write 3 games from the game specs (games 1–3: Empty Exit, Dodge, Lock & Key). These serve three purposes:
+
+1. **Validate the kernel API.** If these are painful to write, fix the kernel before the swarm hits the same friction at scale.
+2. **Calibrate the RL pipeline.** These are known-good baselines with expected difficulty curves.
+3. **Prove the Gym interface works end-to-end.** Each reference game must train PPO successfully.
 
 ### What CLAUDE CODE builds
 
-Reference implementations for games 1–3 (or however many HUMAN has specced at the easy end). Each game is a single Python module with a `setup(env)` function. For example:
+For each reference game (games 1–3 from the specs):
 
-**Game 1: Walk to exit** — trivial, validates that the kernel works end-to-end.
-**Game 2: Avoid patrol** — validates enemy behaviors, collision events.
-**Game 3: Keys and doors** — validates multi-entity interaction, inventory-like properties, state complexity.
-
-### What this validates
-
-1. The kernel API is ergonomic enough for real game logic. If this is painful to write, HUMAN and CLAUDE CODE fix the kernel API before AGENT SWARM hits the same friction at scale.
-2. The RL evaluation pipeline (Step 6) has known-good baselines to calibrate against.
-3. The agent swarm has concrete examples of what a game module looks like.
-
-### RL calibration
-
-After each reference game works, HUMAN trains a PPO agent against it:
-
-```python
-from stable_baselines3 import PPO
-env = GridGameEnv(game_module=walk_to_exit)
-model = PPO("MlpPolicy", env).learn(100_000)
-```
-
-No wrapper needed — the kernel IS the Gym env. Verify that PPO win rates match the expected ranges from the game specs. If they don't, fix the game or the spec.
+- A game module: `games/01_empty_exit.py`, `games/02_dodge.py`, `games/03_lock_and_key.py`
+- Each module exports `GAME_CONFIG` and a `setup(env)` function that registers entity types, behaviors, event handlers, spawning logic, and termination conditions.
+- Each module has its own mechanical tests: `tests/games/test_01_empty_exit.py`, etc.
+- Each module declares its game-specific invariant tests using the framework from Step 2.
 
 ### Where it lives
 
 ```
 games/
-  reference/
-    walk_to_exit.py       — game 1
-    avoid_patrol.py       — game 2
-    keys_and_doors.py     — game 3
+  01_empty_exit.py
+  02_dodge.py
+  03_lock_and_key.py
 tests/
   games/
-    test_walk_to_exit.py  — deterministic tests for game 1
-    test_avoid_patrol.py  — deterministic tests for game 2
-    test_keys_and_doors.py — deterministic tests for game 3
+    test_01_empty_exit.py
+    test_02_dodge.py
+    test_03_lock_and_key.py
 ```
 
-Each reference game gets its own mechanical tests: "player moves north, verify position changed." "Player walks into wall, verify position unchanged." "Player walks into enemy, verify health decreased."
+**Done when**: All three reference games are playable, all mechanical tests pass, all invariant tests pass, and the random agent fuzz test completes 1000 episodes on each without error.
 
-**Done when**: Reference games are playable, all game tests pass, PPO achieves expected win rates from the game specs.
-
-**Output**: 2–3 complete game modules in `games/reference/` with their own tests. PPO training logs confirming calibration.
+**Output**: Three complete reference games with tests.
 
 ---
 
@@ -274,132 +353,81 @@ Each reference game gets its own mechanical tests: "player moves north, verify p
 
 **HUMAN tells CLAUDE CODE**: "Read DEVELOPMENT_PLAN.md. We've completed Steps 1–5. Proceed to Step 6: build the RL evaluation pipeline."
 
-This is the oracle. It takes any game module and produces a pass/fail verdict. This is the equivalent of Carlini's "compile the Linux kernel" integration test — an expensive but high-signal check that runs periodically on the integrated build.
-
-### The four evaluation layers
-
-**Layer 1: Random agent** (built in Step 2, runs on every commit)
-- Feeds random valid actions for 1000 turns. No training, no cost.
-- Pure fuzz testing. Catches crashes, invalid states, exceptions.
-- First gate. If this fails, nothing else runs.
-
-**Layer 2: RL agent** (the core of this step)
-- Trains a Stable-Baselines3 PPO agent directly against the game's `GridGameEnv` (no wrapper — the engine IS the env).
-- Collects metrics: win rate over training, average episode length, convergence speed, state coverage (% of grid cells visited), degenerate strategy detection.
-- Outputs a structured JSON report.
-
-**Layer 3: Invariant tests** (structural checks, run alongside RL)
-- BFS reachability: player can always reach the exit from spawn.
-- Entity coverage: every entity type has a registered behavior.
-- No orphaned rooms: all rooms are connected.
-- State bounds: no property values outside expected ranges after N turns of play.
-- These are deterministic and catch structural problems the RL agent might work around without surfacing.
-- Game specs can declare additional game-specific invariants.
-
-**Layer 4: Claude playtest** (optional, human-triggered only)
-- NOT part of the automated pipeline.
-- HUMAN can trigger this occasionally for subjective "does this feel coherent" evaluation.
-- The one thing RL metrics genuinely can't tell you.
+This is the oracle. It takes any game module and produces a quantitative pass/fail verdict.
 
 ### What CLAUDE CODE builds
 
-A generic evaluation function that takes any game module and produces a verdict:
+A script `evaluate_game.py` that:
 
-```python
-def evaluate_game(game_module, spec) -> EvalReport:
-    env = GridGameEnv(game_module=game_module)
-    # Layer 1: random agent
-    # Layer 2: PPO training
-    # Layer 3: invariant checks
-    # Compare metrics against spec's expected ranges
-    return report
-```
+1. **Layer 1 — Random Agent.** Loads the game, runs 1000 episodes of random actions. Records:
+   - Crash count (must be 0).
+   - Termination rate (% of episodes that end before `max_turns`).
+   - Win rate.
+   - Average episode length.
+   - Pass criteria: zero crashes, termination rate > 80%, win rate between the game spec's declared bounds.
 
-### RL evaluation report format
+2. **Layer 2 — PPO Training.** Trains a Stable-Baselines3 PPO agent (`MultiInputPolicy` — automatically applies CNN to the grid observation and MLP to scalars) for 100k timesteps. Records:
+   - Win rate at 10k steps.
+   - Win rate at 100k steps.
+   - Learning delta (win rate at 100k minus win rate at 10k).
+   - Average episode length over training.
+   - Pass criteria: learning delta > 0 (the agent is actually learning), final win rate exceeds the game spec's declared minimum.
 
-```json
-{
-  "game": "combat_roguelike",
-  "random_agent": {
-    "turns_played": 1000,
-    "crashes": 0,
-    "invalid_states": 0,
-    "pass": true
-  },
-  "rl_agent": {
-    "episodes_trained": 500,
-    "final_win_rate": 0.62,
-    "win_rate_curve": [0.0, 0.05, 0.12, 0.31, 0.48, 0.62],
-    "avg_episode_length": 47,
-    "state_coverage": 0.78,
-    "convergence_episode": 320,
-    "degenerate_strategies": ["agent camps corner at (0,0) in 12% of wins"]
-  },
-  "invariants": {
-    "exit_reachable": true,
-    "all_behaviors_registered": true,
-    "all_rooms_connected": true,
-    "property_bounds_valid": true
-  },
-  "spec_compliance": {
-    "win_rate_in_expected_range": true,
-    "expected_range": [0.4, 0.7]
-  },
-  "verdict": "healthy"
-}
-```
+3. **Layer 3 — Invariant Tests.** Runs all registered invariant tests for the game module. All must pass.
 
-### Interpreting results
+4. **Output.** A single JSON report:
+   ```json
+   {
+     "game": "04_dungeon_crawl",
+     "random_agent": { "crashes": 0, "termination_rate": 0.95, "win_rate": 0.03, "avg_length": 87.2, "pass": true },
+     "ppo": { "win_rate_10k": 0.05, "win_rate_100k": 0.38, "learning_delta": 0.33, "pass": true },
+     "invariants": { "total": 12, "passed": 12, "failed": [], "pass": true },
+     "overall_pass": true
+   }
+   ```
 
-- **Broken/unwinnable**: RL win rate stays at 0% after full training. Random agent may also crash.
-- **Too easy / no depth**: RL solves it in <20 episodes. Win rate jumps to 90%+ immediately.
-- **Healthy**: Win rate climbs gradually (0% → 40–70%) over hundreds of episodes. Agent visits most of the grid. No degenerate strategies dominate.
-- **Degenerate design**: RL finds a dominant strategy (e.g., camp a safe corner, ignore items). Win rate is high but state coverage is low.
-- **Balance problems**: Agent never picks up certain items, or dies to the same enemy placement consistently.
+### Calibration
 
-### Framework
+HUMAN runs the evaluator against all three reference games. Expected results:
 
-- **Stable-Baselines3** for PPO (pip-installable, works out of the box for small discrete envs).
-- **Gymnasium** — native, no wrapper needed. The kernel IS the env.
-- No FFI boundary. No subprocess communication. No WASM. Everything is Python.
+| Game | Random Win Rate | PPO 100k Win Rate | Learning Delta |
+|------|----------------|-------------------|----------------|
+| Empty Exit | 5–30% | >90% | >30% |
+| Dodge | 1–10% | >50% | >15% |
+| Lock & Key | <2% | >20% | >10% |
 
-**Done when**: The evaluation pipeline runs against all reference games and produces healthy reports. PPO achieves expected win rates from the game specs. Invariant tests all pass. Report format is stable and parseable.
+If these don't hold, HUMAN adjusts the game difficulty or the PPO hyperparameters until they do. Only then is the oracle trusted to evaluate swarm output.
 
-**Output**: Generic evaluation function. Evaluation reports for all reference games. Trained baseline agents.
+**Done when**: The evaluator produces correct verdicts for all three reference games.
+
+**Output**: `evaluate_game.py`. Calibration results. PPO hyperparameter config.
 
 ---
 
 ## Step 7: AGENT SWARM goes autonomous on userland
 
-**HUMAN starts the containers**. AGENT SWARM runs autonomously from here.
-
-Each game spec in `game_specs/` that doesn't have a completed implementation in `games/` is a task. This is naturally parallel — each agent picks a different game spec, just like Carlini's agents compiling different C programs.
+**HUMAN starts the containers.** AGENT SWARM runs autonomously from here.
 
 Each agent's cycle:
 1. Pull from upstream.
-2. Read AGENT_PROMPT.md and PROGRESS.md.
-3. Check `current_tasks/` — see what's claimed, pick an unclaimed game spec.
-4. Claim the task (write lock file, push).
-5. Implement the game as a Python module in `games/` following the pattern of reference games.
+2. Read `AGENT_PROMPT.md` and `PROGRESS.md`.
+3. Check `current_tasks/` — see what's claimed. Check `game-specs/` for games that don't have a passing implementation in `games/` yet.
+4. Claim a game (write lock file, push).
+5. Implement the game as a single Python module in `games/`, exporting `GAME_CONFIG` and `setup(env)`.
 6. Run mechanical tests with `--fast`. Fix regressions.
-7. Run full mechanical test suite. All must pass.
-8. Push to upstream. Remove lock file. Update PROGRESS.md.
+7. Run random agent fuzz test on their game. Fix crashes.
+8. Run invariant tests. Fix violations.
+9. Run full mechanical test suite. All must pass.
+10. Push to upstream. Remove lock file. Update `PROGRESS.md`.
 
-The RL evaluation pipeline runs periodically (not every commit — training takes minutes) on the integrated build. Layer 1 (random agent) runs on every commit as part of the test suite. If the RL evaluation surfaces problems (win rate regression, degenerate strategies, broken invariants), HUMAN can either intervene directly or add new mechanical tests that encode the problem, which AGENT SWARM will then fix autonomously.
+HUMAN runs `evaluate_game.py` periodically (not every commit — PPO training is expensive) on new game implementations. If the RL evaluation fails, HUMAN can either intervene or add new mechanical tests / invariant checks that encode the problem, which AGENT SWARM will then fix autonomously.
 
-### The scaling knob
+### Scaling
 
-The number of game specs is how you scale the experiment:
-- Start with 5 specs. If the swarm converges fast, write 10 more.
-- If agents struggle, simplify the specs or break complex games into subtasks.
-- Carlini scaled from test suites to SQLite to Redis to Linux. You scale from "walk to exit" to "full roguelike" to "tower defense."
+The number of game specs is the scaling knob. Start with 5 swarm games (specs 4–8). If agents converge fast, write more specs. If they struggle, simplify existing specs or decompose them into sub-tasks (e.g., "implement enemy behaviors for dungeon crawl" and "implement item system for dungeon crawl" as separate tasks).
 
-### Parallelism guidance (from Carlini)
+Consider specialized agent roles: one for code quality / deduplication across game modules, one for documentation, one for writing additional invariant tests.
 
-- Each game spec is independent — perfect parallel task. 8 specs = 8 agents with zero coordination.
-- When agents converge on the same problem (e.g., a kernel bug that affects multiple games), reduce agent count or decompose the problem further.
-- Consider specialized agent roles: one agent for code quality/deduplication, one for writing new game specs based on what's been learned.
+**Done when**: HUMAN decides the games meet their quality bar, informed by RL evaluation verdicts, invariant test results, and their own judgment.
 
-**Done when**: HUMAN decides the games meet their quality bar, informed by RL evaluation metrics (win rate, convergence, coverage, degenerate strategy detection) and their own judgment.
-
-**Output**: Multiple complete games, built autonomously by AGENT SWARM, validated by mechanical tests, random agent fuzzing, RL evaluation pipeline, and invariant checks.
+**Output**: Multiple complete games, built autonomously by AGENT SWARM, validated by both mechanical tests and the RL oracle.
