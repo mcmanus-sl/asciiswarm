@@ -30,3 +30,10 @@ Tracking file for agent swarm progress. Agents update this file with status of t
 - **Tests:** `tests/games/test_07_hunger_clock.py` (15 tests, all passing)
 - **Full suite:** 207/207 passed
 - **Notes:** Player at (0,13) must reach exit at (13,0) before food runs out. 10-15 food pickups restore 5 food each (cap 20). 3-5 wall clusters with BFS reachability check. Food decreases by 1 per turn. Manhattan distance is 26 but starting food is 20, so player must eat to survive.
+
+## Game 09: Inventory & Crafting
+- **Status:** COMPLETE
+- **File:** `games/09_inventory_crafting.py`
+- **Tests:** `tests/games/test_09_inventory_crafting.py` — 16/16 pass
+- **Full suite:** 249/249 passed
+- **Notes:** 16x16 grid. Player starts in left third (x<5). Collect wood (4-6) and ore (3-5) scattered in playable area. Craft pickaxe at workbench (center area) with 2 wood + 2 ore via interact. Mine rubble at x=12 wall gap with pickaxe (breaks after use). Exit behind rubble wall (x>=13). No enemies, no lose condition — truncates at 400 turns. Intermediate rewards: +0.05 per pickup, +0.3 for crafting, +0.3 for mining rubble. Tags: pickup for wood/ore (distance shaping), exit for goal.
