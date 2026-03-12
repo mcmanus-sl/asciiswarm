@@ -67,3 +67,11 @@ Tracking file for agent swarm progress. Agents update this file with status of t
 - **Full suite:** 318/318 passed
 - **RL Eval:** Random agent: 0 crashes, 100% termination, 0% win. PPO: 14% early -> 41% final, delta=0.27. Invariants: 9/9 passed.
 - **Notes:** 20x20 grid. Player at bottom-left, exit at top-right. 8-10 rabbits (prey, reproduce near bushes every 20 turns, cap 15), 2-3 wolves (predators, hunt rabbits within 5 tiles, reproduce every 40 turns, cap 5). Hunger clock: food -1 every 3 turns, hunting rabbits +3 food. Wolf combat: player -2hp, wolf -1hp per hit. Rabbits flee wolves within 3 tiles. 5-7 bushes enable rabbit reproduction. Exit tagged for distance shaping. 6 game-specific invariants + exit_exists.
+
+## Game 14: Fluid & Pressure
+- **Status:** COMPLETE
+- **File:** `games/14_fluid_and_pressure.py`
+- **Tests:** `tests/games/test_14_fluid_and_pressure.py` (17 tests, all passing)
+- **Full suite:** 349/349 passed
+- **RL Eval:** Random agent: 0 crashes, 100% termination, 4% win. PPO: 98% early -> 100% final, delta=0.02. Invariants: 10/10 passed.
+- **Notes:** 20x16 grid. Player at left (1, 8), exit at right (18, 8). 1-2 water sources in upper area spawn water each turn. Water spreads to adjacent empty cells (30% chance per turn, 3-turn maturation delay, capped at 60 tiles). 2-3 pumps (toggle via interact, destroy water within Manhattan 2 when active). 2-3 drains (passively destroy water at end of turn). 1 valve (interact to permanently destroy a water source). Air=10, decreases by 1 per turn on water, resets on dry land. Drowning at air=0 loses. Intermediate rewards: +0.1 pump toggle, +0.3 valve use. Exit tagged for distance shaping. 6 game-specific invariants + exit_exists.
