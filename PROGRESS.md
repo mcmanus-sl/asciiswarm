@@ -24,6 +24,14 @@ Tracking file for agent swarm progress. Agents update this file with status of t
 - Hardcoded fallback layout if procedural generation fails after 100 attempts
 - Exit invariants + 5 game-specific invariants
 
+## Game 08: Block Push
+- **Status**: COMPLETE
+- **File**: `games/08_block_push.py`
+- **Tests**: `tests/games/test_08_block_push.py` — 10/10 pass
+- **Full suite**: 228/228 pass
+- **Random agent**: 1000 episodes, 0 crashes, 0.5% win rate (within spec 0.5-5%)
+- **Notes**: 8x8 grid, simplified Sokoban. 2 blocks (center), 2 targets (top half), player (bottom half). Solvability BFS during generation (max 50 moves, 100 attempts, fallback layout). Push mechanics via collision handler with before_move allowing pushable entities. Distance-based reward shaping for PPO. No lose condition (truncates at 300).
+
 ## Game 07: Hunger Clock
 - **Status:** COMPLETE
 - **File:** `games/07_hunger_clock.py`
