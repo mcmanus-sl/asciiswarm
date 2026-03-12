@@ -83,3 +83,11 @@ Tracking file for agent swarm progress. Agents update this file with status of t
 - **Full suite:** 368/368 passed
 - **RL Eval:** Random agent: 0 crashes, 100% termination, 3.8% win. PPO: 22% early -> 73% final, delta=0.51. Invariants: 10/10 passed.
 - **Notes:** 20x10 grid. Player at (2,5) left side, harbor (exit) at (18,5) right side. Two merchants (merchant_a at left, merchant_b at right) with buy/sell actions — goods_a bought cheaply at merchant_a, sold at premium at merchant_b, and vice versa. Prices escalate with sold_count/bought_count. 8 gold pile pickups (5 gold each) scattered across map provide a direct collection path to 50 gold. 3-4 bandits on road with chase behavior (Manhattan distance 4), combat drops 5 gold. 2 rest stops heal +2 HP. Win by reaching harbor with 50+ gold. Gold milestone rewards (+0.3 per 10 gold). Pickups tagged for distance shaping. 6 game-specific invariants + exit_exists.
+
+## Game 16: Mood & Needs
+- **Status:** COMPLETE
+- **File:** `games/16_mood_and_needs.py`
+- **Tests:** `tests/games/test_16_mood_and_needs.py` (16 tests, all passing)
+- **Full suite:** 384/384 passed
+- **RL Eval:** Random agent: 0 crashes, 100% termination, 3.4% win. PPO: 11% early -> 75% final, delta=0.64. Invariants: 9/9 passed.
+- **Notes:** 16x16 grid, open layout (outer walls only). Player at center (8,8) with 4 dwarves nearby. Dwarves have hunger/rest/social needs (start at 6, decay every 4/5/6 turns). Mood = min(needs); mood 0 triggers tantrum cascade (3-turn destructive rampage, nearby dwarves lose mood). Facilities: 2 food stores (top-left), 4 beds (top-right), 1 tavern (bottom-center). 5 build sites at edges, 8-10 stones scattered randomly. Player orders dwarves via order_eat/sleep/socialize/build. Dwarves navigate to facilities, stones, and build sites autonomously. Win by building 5 walls. Lose if all dwarves die (tantrum cascade destroys infrastructure). Intermediate rewards: +0.05 per order, +0.1 per need fulfilled, +0.15 per stone pickup, +0.8 per wall built, -0.3 per tantrum. 6 game-specific invariants.
