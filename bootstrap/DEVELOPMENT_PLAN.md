@@ -152,22 +152,22 @@ HUMAN writes 5–8 one-page game specifications at escalating complexity. These 
 
 ### Suggested progression
 
-| # | Game | Complexity | Purpose |
-|---|------|-----------|---------|
-| 1 | **Empty Exit** | Trivial | Walk to exit on empty grid. Validates pipeline. |
-| 2 | **Dodge** | Low | Walk to exit, one patrolling enemy. Tests hazard avoidance. |
-| 3 | **Lock & Key** | Medium | Find key (pickup), unlock door (solid→removed), reach exit. Tests interact + state change. |
-| 4 | **Dungeon Crawl** | Medium-High | Multi-room, 3 enemy types, health, potions, combat. Tests combat + resource management. |
-| 5 | **Sokoban** | Medium | Push boxes onto targets. Tests spatial reasoning. |
-| 6 | **Wave Survival** | High | Enemies spawn in waves. Survive N turns. Tests sustained play. |
-| 7 | **Stealth** | High | Enemies have sight cones. Reach exit unseen. Tests avoidance. |
-| 8 | **Gather & Craft** | High | Collect resources, craft tools, open path to exit. Tests multi-step planning. |
+| # | Game | Complexity | New Engine Capability | Built By |
+|---|------|-----------|----------------------|----------|
+| 1 | **Empty Exit** | Trivial | Pipeline validation | Reference |
+| 2 | **Dodge** | Low | Enemy behaviors, hazard avoidance | Reference |
+| 3 | **Lock & Key** | Medium | `interact` action, entity state mutation, multi-step dependency | Reference |
+| 4 | **Dungeon Crawl** | Medium-High | Combat, health, procgen rooms | Swarm |
+| 5 | **Pac-Man Collect** | Medium | Collection-based win condition (all pickups), deterministic enemy AI | Swarm |
+| 6 | **Ice Sliding** | Medium | `before_move` chaining / momentum physics (slide until hitting solid) | Swarm |
+| 7 | **Hunger Clock** | Medium-High | Ticking resource depletion (`food` decreases each turn) | Swarm |
+| 8 | **Block Push** | Medium-High | Push mechanics via collision chain (player→block→wall) | Swarm |
 
 Games 1–3 are built by HUMAN + CLAUDE CODE as reference implementations in Step 5. Games 4–8 are swarm tasks in Step 7.
 
 **Done when**: Game spec files exist in `game-specs/` and each spec is complete enough that a developer could implement it without asking questions. Each spec includes a `GAME_CONFIG` block.
 
-**Output**: `game-specs/01-empty-exit.md` through `game-specs/08-gather-craft.md`
+**Output**: `game-specs/01-empty-exit.md` through `game-specs/08-block-push.md`
 
 ---
 
