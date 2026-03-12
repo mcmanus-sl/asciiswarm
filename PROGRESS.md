@@ -75,3 +75,11 @@ Tracking file for agent swarm progress. Agents update this file with status of t
 - **Full suite:** 349/349 passed
 - **RL Eval:** Random agent: 0 crashes, 100% termination, 4% win. PPO: 98% early -> 100% final, delta=0.02. Invariants: 10/10 passed.
 - **Notes:** 20x16 grid. Player at left (1, 8), exit at right (18, 8). 1-2 water sources in upper area spawn water each turn. Water spreads to adjacent empty cells (30% chance per turn, 3-turn maturation delay, capped at 60 tiles). 2-3 pumps (toggle via interact, destroy water within Manhattan 2 when active). 2-3 drains (passively destroy water at end of turn). 1 valve (interact to permanently destroy a water source). Air=10, decreases by 1 per turn on water, resets on dry land. Drowning at air=0 loses. Intermediate rewards: +0.1 pump toggle, +0.3 valve use. Exit tagged for distance shaping. 6 game-specific invariants + exit_exists.
+
+## Game 15: Trade & Economy
+- **Status:** COMPLETE
+- **File:** `games/15_trade_and_economy.py`
+- **Tests:** `tests/games/test_15_trade_and_economy.py` (19 tests, all passing)
+- **Full suite:** 368/368 passed
+- **RL Eval:** Random agent: 0 crashes, 100% termination, 3.8% win. PPO: 22% early -> 73% final, delta=0.51. Invariants: 10/10 passed.
+- **Notes:** 20x10 grid. Player at (2,5) left side, harbor (exit) at (18,5) right side. Two merchants (merchant_a at left, merchant_b at right) with buy/sell actions — goods_a bought cheaply at merchant_a, sold at premium at merchant_b, and vice versa. Prices escalate with sold_count/bought_count. 8 gold pile pickups (5 gold each) scattered across map provide a direct collection path to 50 gold. 3-4 bandits on road with chase behavior (Manhattan distance 4), combat drops 5 gold. 2 rest stops heal +2 HP. Win by reaching harbor with 50+ gold. Gold milestone rewards (+0.3 per 10 gold). Pickups tagged for distance shaping. 6 game-specific invariants + exit_exists.
