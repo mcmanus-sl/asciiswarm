@@ -1,79 +1,100 @@
 # Game Spec 08: Block Push
 
 ## Overview
-A simplified Sokoban: the player pushes 2 blocks onto 2 target tiles. Walking into a block pushes it one tile in the same direction — unless the block is itself blocked, in which case the player's move is also cancelled. This tests push mechanics via collision chains and spatial puzzle solving.
+Simplified Sokoban: push 2 blocks onto 2 target tiles. Walking into a block pushes it one tile — unless the block is blocked, in which case the player's move is also cancelled. Tests push mechanics and spatial puzzle solving.
 
 ## Grid
 - Dimensions: 8×8
 
-## GAME_CONFIG
+## EnvConfig
 
 ```python
-GAME_CONFIG = {
-    'tags': ['player', 'solid', 'hazard', 'pickup', 'exit', 'npc', 'pushable', 'target'],
-    'grid': (8, 8),
-    'max_turns': 300,
-    'step_penalty': -0.005,
-    'player_properties': [],
-}
+CONFIG = EnvConfig(
+    grid_w=8, grid_h=8,
+    max_entities=32,       # border walls (28) + player + 2 blocks + 2 targets
+    max_stack=3,           # block can be on top of target
+    num_entity_types=5,    # 0=unused, 1=player, 2=block, 3=target, 4=wall
+    num_tags=8,            # 0=player, 1=solid, 2=hazard, 3=pickup, 4=exit, 5=npc, 6=pushable, 7=target
+    num_props=1,
+    num_actions=6,
+    max_turns=300,
+    step_penalty=-0.005,
+    game_state_size=2,     # 0=blocks_on_target, 1=total_pushes
+)
 ```
+
+## Entity Type Enum
+
+| Type ID | Name | Glyph |
+|---------|------|-------|
+| 0 | (unused) | — |
+| 1 | player | `@` |
+| 2 | block | `B` |
+| 3 | target | `X` |
+| 4 | wall | `#` |
+
+## Tag Index Mapping
+
+| Tag Index | Name |
+|-----------|------|
+| 0 | player |
+| 1 | solid |
+| 2 | hazard |
+| 3 | pickup |
+| 4 | exit |
+| 5 | npc |
+| 6 | pushable |
+| 7 | target |
+
+## Property Index Mapping
+
+No meaningful properties. Array size 1.
 
 ## Entities
 
-| Type | Tags | Glyph | Z-Order | Spawning |
-|------|------|-------|---------|----------|
-| `player` | `player` | `@` | 10 | Random empty cell in bottom half (y >= 4) |
-| `block` | `solid`, `pushable` | `B` | 5 | 2 blocks, random empty cells in the center area (2 <= x <= 5, 2 <= y <= 5) |
-| `target` | `target` | `X` | 3 | 2 targets, random empty cells in the top half (y <= 3), not on walls |
-| `wall` | `solid` | `#` | 1 | Border walls on all 4 edges |
-
-## Player Properties
-None. No properties needed for this game.
-
-## Layout
-
-The grid has border walls on all edges (x=0, x=7, y=0, y=7). The interior (x=1–6, y=1–6) is open except for the blocks and targets. The small grid and open interior keep the puzzle tractable for PPO.
-
-All placement uses `env.random()`. After placement, verify solvability: BFS over (player_pos, block1_pos, block2_pos) state space. If no solution exists within 50 moves, regenerate (max 100 attempts, then use a known-good hardcoded layout).
+| Type | Tags | Spawning |
+|------|------|----------|
+| player (1) | player (0) | Random empty cell, bottom half (y >= 4) |
+| block (2) | solid (1), pushable (6) | 2 blocks, center area (2 ≤ x ≤ 5, 2 ≤ y ≤ 5) |
+| target (3) | target (7) | 2 targets, top half (y ≤ 3), not on walls |
+| wall (4) | solid (1) | Border walls on all 4 edges |
 
 ## Behaviors
-None. No entity has autonomous behavior.
 
-## Event Handlers
+None.
 
-- **`input` (Player Movement)**: The game module MUST register an `input` event handler that moves the player. If action is `move_n`, attempt `env.move_entity(player.id, player.x, player.y - 1)`. Map `move_s` to +y, `move_e` to +x, `move_w` to -x. `wait` does nothing. `interact` does nothing.
+## Turn Phases
 
-- **`collision` (player pushes block)**: If mover is `player` and any occupant is tagged `pushable`:
-  - Compute the push direction from the player's movement (dx = occupant.x - mover_source.x, dy = occupant.y - mover_source.y).
-  - Attempt to move the block: `env.move_entity(block.id, block.x + dx, block.y + dy)`.
-  - If the block move succeeds: allow the player's move (do NOT cancel). Then check the win condition.
-  - If the block move fails (blocked by `solid` or out of bounds): cancel the player's move (player stays in place).
+### Phase 1: Process Input
+- Actions 0–3 (move): Compute target cell and direction vector (dx, dy).
+  - If target has wall (solid, not pushable): cancel move.
+  - If target has block (solid AND pushable): attempt push.
+    - Compute block's push destination: `(block_x + dx, block_y + dy)`.
+    - Check if push destination has any solid entity or is out of bounds → cancel both block push and player move.
+    - If push destination clear: move block, then move player into block's old cell. Increment `game_state[1]` (total_pushes).
+    - After push: count how many targets have a block on the same cell. If count == 2, set `status = 1`.
+  - Otherwise: move player normally.
+- Actions 4–5: No-op.
 
-- **`collision` (win condition check)**: After a successful block push, check if ALL entities tagged `target` have an entity tagged `pushable` on the same cell. If so, call `env.end_game('won')`.
+### Phase 2: Run Behaviors
+None.
 
-- **`before_move` (solid blocks movement)**: If target cell contains any entity tagged `solid`, cancel the move. Note: blocks are tagged `solid`, so this fires when the player walks into a block — the `collision` handler then overrides this by attempting the push.
+### Phase 3: Turn End
+Nothing.
 
-### Collision/Before-Move Interaction
+## Push Detection in JAX
 
-The push mechanic requires careful handler ordering:
-1. `before_move` fires first and would cancel movement into a `solid` block.
-2. The `collision` handler must fire INSTEAD of (or override) the `before_move` cancellation for `pushable` entities specifically.
-3. **Implementation approach**: The `before_move` handler should check: if the target cell contains a `pushable` entity, do NOT cancel (let the collision handler handle it). Only cancel for non-pushable `solid` entities (walls, other blocked blocks after a failed push).
+The push mechanic requires checking:
+1. Is target cell occupied by a pushable entity? → `find_by_tag(state, 6)` (pushable) mask, check if any alive pushable is at target.
+2. Is push destination blocked? → Check for solid entities at `(block_x + dx, block_y + dy)`.
+3. All via `jnp.where`, no Python branching.
 
-Alternatively, skip `before_move` for the player entirely and handle all player-vs-solid interactions in the `collision` handler:
-- If occupant is `solid` but NOT `pushable` → cancel move.
-- If occupant is `pushable` → attempt push (as described above).
+## game_state Slots
 
-Either approach works. The game implementer should choose whichever is cleaner.
-
-## Interact Mapping
-`interact` does nothing in this game.
-
-## Win Condition
-Both blocks are on target tiles simultaneously. Checked after every successful block push.
-
-## Lose Condition
-None. This game cannot be lost. The engine truncates at `max_turns` (300). (Deadlocked states — where blocks are pushed into unmovable positions — effectively make the game unwinnable, but the engine handles this via truncation, not an explicit loss.)
+| Index | Name |
+|-------|------|
+| 0 | blocks_on_target (win at 2) |
+| 1 | total_pushes |
 
 ## RL Evaluation Criteria
 
@@ -83,21 +104,21 @@ None. This game cannot be lost. The engine truncates at `max_turns` (300). (Dead
 | PPO win rate at 100k steps | >10% |
 | PPO learning delta (100k - 10k) | >5% |
 
-## Invariant Tests (game-specific)
+## Invariant Tests
 
-1. Exactly 2 blocks exist at game start.
-2. Exactly 2 targets exist at game start.
-3. Player starts in the bottom half (y >= 4).
-4. Blocks start in the center area (2 <= x <= 5, 2 <= y <= 5).
-5. Targets are in the top half (y <= 3).
-6. No block starts on a target (puzzle is not pre-solved).
-7. No two blocks start on the same cell.
-8. No two targets are on the same cell.
-9. The puzzle is solvable (verified during generation).
+1. Exactly 2 blocks at game start.
+2. Exactly 2 targets at game start.
+3. Player starts in bottom half (y >= 4).
+4. Blocks in center area (2 ≤ x ≤ 5, 2 ≤ y ≤ 5).
+5. Targets in top half (y ≤ 3).
+6. No block starts on a target (not pre-solved).
+7. No two blocks on same cell.
+8. No two targets on same cell.
+9. Puzzle is solvable (verified during generation).
 
 ## Notes
-- This is deliberately simplified from full Sokoban: only 2 blocks, only 2 targets, small 8×8 grid with open interior. Full Sokoban with many blocks is notoriously hard for PPO.
-- The push mechanic creates a collision chain: player→block→wall. If the wall blocks the block, both the block and player stay in place.
-- Reward shaping: consider adding distance-based intermediate rewards. For each block, compute Manhattan distance to the nearest unoccupied target. Sum of distances decreasing gives a positive reward signal. Example: `reward = 0.02 * (prev_total_distance - curr_total_distance)`. This is optional but strongly recommended for PPO convergence.
-- Deadlocked states (block in corner, no way to push it out) are common in Sokoban. The small grid and open layout minimize these. The solvability BFS during generation helps, but pushes during play can still create deadlocks.
-- The `target` and `pushable` tags are custom to this game (declared in `GAME_CONFIG['tags']`).
+- Simplified from full Sokoban: only 2 blocks, 2 targets, open 8×8 interior.
+- Push chain: player → block → wall. If wall blocks block, everything stays.
+- Solvability BFS over `(player_pos, block1_pos, block2_pos)` state space. Python-side in `reset`.
+- Distance-based reward shaping recommended: `0.02 * (prev_distance_sum - curr_distance_sum)`.
+- `pushable` and `target` are custom tags (indices 6, 7) declared in this game's config.

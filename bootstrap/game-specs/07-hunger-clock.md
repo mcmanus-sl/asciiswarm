@@ -1,72 +1,87 @@
 # Game Spec 07: Hunger Clock
 
 ## Overview
-The player must reach an exit on the far side of the grid before starving. Food decreases by 1 every turn. Food pickups are scattered across the grid and restore food when collected. The player must balance exploring toward the exit with detours to eat. This tests ticking resource depletion as a core mechanic.
+The player must reach an exit before starving. Food decreases by 1 every turn. Food pickups restore food. Player must balance exploring toward exit with detours to eat. Tests ticking resource depletion.
 
 ## Grid
 - Dimensions: 14×14
 
-## GAME_CONFIG
+## EnvConfig
 
 ```python
-GAME_CONFIG = {
-    'grid': (14, 14),
-    'max_turns': 400,
-    'step_penalty': -0.005,
-    'player_properties': [
-        {'key': 'food', 'max': 20},
-    ],
-}
+CONFIG = EnvConfig(
+    grid_w=14, grid_h=14,
+    max_entities=48,       # player + exit + 10-15 food + 10-20 walls
+    max_stack=2,
+    num_entity_types=5,    # 0=unused, 1=player, 2=exit, 3=food, 4=wall
+    num_tags=6,            # standard 6
+    num_props=2,           # 0=food (player), 1=unused
+    num_actions=6,
+    max_turns=400,
+    step_penalty=-0.005,
+    game_state_size=2,     # 0=food_eaten_count, 1=unused
+)
 ```
+
+## Entity Type Enum
+
+| Type ID | Name | Glyph |
+|---------|------|-------|
+| 0 | (unused) | — |
+| 1 | player | `@` |
+| 2 | exit | `>` |
+| 3 | food | `f` |
+| 4 | wall | `#` |
+
+## Property Index Mapping
+
+| Prop Index | Name | Used By |
+|-----------|------|---------|
+| 0 | food | player: starts at 20, max 20 |
+| 1 | (unused) | — |
+
+## Player Properties (for scalar observation)
+
+| Key | Max | Description |
+|-----|-----|-------------|
+| food (prop 0) | 20 | Current food level |
 
 ## Entities
 
-| Type | Tags | Glyph | Z-Order | Spawning |
-|------|------|-------|---------|----------|
-| `player` | `player` | `@` | 10 | Bottom-left corner: (0, 13) |
-| `exit` | `exit` | `>` | 5 | Top-right corner: (13, 0) |
-| `food` | `pickup` | `f` | 5 | 10–15 food entities scattered randomly across the grid (via `env.random()`) |
-| `wall` | `solid` | `#` | 1 | A few wall clusters (3–5 clusters of 2–4 walls each) to create routing obstacles |
-
-## Player Properties
-
-| Key | Initial Value | Max (for normalization) | Description |
-|-----|--------------|------------------------|-------------|
-| `food` | 20 | 20 | Current food level. Decreases by 1 each turn. |
-
-## Wall Placement
-
-Place 3–5 wall clusters randomly (via `env.random()`). Each cluster is 2–4 adjacent wall tiles (horizontal or vertical). Walls cannot be placed on the player start, exit, or food locations. After placement, verify the exit is reachable from the player (BFS over non-`solid` tiles). Regenerate if unreachable (max 100 attempts, then use a known-good layout).
+| Type | Tags | Spawning |
+|------|------|----------|
+| player (1) | player (0) | Bottom-left corner (0, 13) |
+| exit (2) | exit (4) | Top-right corner (13, 0) |
+| food (3) | pickup (3) | 10–15 scattered randomly |
+| wall (4) | solid (1) | 3–5 clusters of 2–4 walls each |
 
 ## Behaviors
-None. No entity has autonomous behavior.
 
-## Event Handlers
+None.
 
-- **`input` (Player Movement)**: The game module MUST register an `input` event handler that moves the player. If action is `move_n`, attempt `env.move_entity(player.id, player.x, player.y - 1)`. Map `move_s` to +y, `move_e` to +x, `move_w` to -x. `wait` does nothing. `interact` does nothing.
+## Turn Phases
 
-- **`turn_end` (Hunger Tick)**: At the end of every turn:
-  - Decrease `player.properties['food']` by 1.
-  - If `player.properties['food'] <= 0`, call `env.end_game('lost')`.
+### Phase 1: Process Input
+- Move player. Check target for solid → cancel. Check target for pickup (food) → move succeeds, increase food by 5 (cap at 20), destroy food entity, add 0.05 to `reward_acc`.
+- Check target for exit → move succeeds, `status = 1`.
 
-- **`collision` (player walks into pickup)**: If mover is `player` and any occupant is tagged `pickup`:
-  - Allow the move (do NOT cancel).
-  - Increase `player.properties['food']` by 5, capped at 20.
-  - Destroy the food entity.
-  - Emit `reward` event with `{ 'amount': 0.05 }`.
+### Phase 2: Run Behaviors
+None.
 
-- **`collision` (player walks into exit)**: If mover is `player` and any occupant is tagged `exit`, call `env.end_game('won')`.
+### Phase 3: Turn End
+- Decrease `properties[player_idx, 0]` (food) by 1.
+- If food ≤ 0, set `status = -1` (lost/starved).
 
-- **`before_move` (solid blocks movement)**: If target cell contains any entity tagged `solid`, cancel the move.
+## Wall Placement (in `reset`)
 
-## Interact Mapping
-`interact` does nothing in this game.
+3–5 wall clusters placed randomly. Each cluster is 2–4 adjacent tiles. Walls cannot be on player start, exit, or food locations. After placement, verify exit is reachable from player (BFS, Python-side). Regenerate if unreachable (max 100 attempts).
 
-## Win Condition
-Player walks onto the exit tile before starving.
+## game_state Slots
 
-## Lose Condition
-Player's food reaches 0 (checked at end of each turn via `turn_end` handler).
+| Index | Name |
+|-------|------|
+| 0 | food_eaten_count |
+| 1 | (unused) |
 
 ## RL Evaluation Criteria
 
@@ -76,18 +91,16 @@ Player's food reaches 0 (checked at end of each turn via `turn_end` handler).
 | PPO win rate at 100k steps | >15% |
 | PPO learning delta (100k - 10k) | >8% |
 
-## Invariant Tests (game-specific)
+## Invariant Tests
 
-1. Player starts with `food == 20`.
-2. Between 10 and 15 food entities exist at game start.
+1. Player starts with food == 20.
+2. Between 10 and 15 food entities at game start.
 3. Player starts at (0, 13).
-4. Exit is at (13, 0).
-5. Exit is reachable from the player (BFS over non-`solid` tiles).
-6. No food entity spawns on the player's cell, exit cell, or a wall cell.
+4. Exit at (13, 0).
+5. Exit reachable from player (BFS over non-solid).
+6. No food on player cell, exit cell, or wall cell.
 
 ## Notes
-- The Manhattan distance from (0,13) to (13,0) is 26, which is greater than the starting food of 20. The player MUST eat at least one food pickup to survive the journey. This is the core design tension.
-- Food placement via `env.random()` means some runs are easier than others, but the 10–15 food count ensures enough exists.
-- The hunger clock creates time pressure that distinguishes this from a simple pathfinding game — the player can't wander aimlessly.
-- Reward shaping (+0.05 per food pickup) encourages the agent to eat, preventing starvation deaths early in training.
-- Wall clusters add routing complexity without making the map feel maze-like.
+- Manhattan distance (0,13)→(13,0) = 26, exceeding starting food of 20. Player MUST eat at least once. This is the core design tension.
+- Hunger clock creates time pressure distinguishing this from simple pathfinding.
+- Food decrease happens in Turn End, after player movement, so eating food on the same turn food would tick still works.

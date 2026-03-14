@@ -1,56 +1,92 @@
 # Game Spec 02: Dodge
 
 ## Overview
-A player must reach an exit while avoiding a patrolling enemy. The enemy bounces horizontally across the grid. Contact with the enemy kills the player. This is the first game with autonomous entity behavior and introduces hazard avoidance.
+A player must reach an exit while avoiding a patrolling enemy. The enemy bounces horizontally across the grid. Contact with the enemy kills the player. First game with autonomous entity behavior and hazard avoidance.
 
 ## Grid
 - Dimensions: 10×10
 
-## GAME_CONFIG
+## EnvConfig
 
 ```python
-GAME_CONFIG = {
-    'grid': (10, 10),
-    'max_turns': 200,
-    'step_penalty': -0.01,
-    'player_properties': [],
-}
+CONFIG = EnvConfig(
+    grid_w=10, grid_h=10,
+    max_entities=8,
+    max_stack=2,
+    num_entity_types=4,    # 0=unused, 1=player, 2=exit, 3=wanderer
+    num_tags=6,            # 0=player, 1=solid, 2=hazard, 3=pickup, 4=exit, 5=npc
+    num_props=2,           # 0=direction (for wanderer), 1=unused
+    num_actions=6,         # 0=move_n, 1=move_s, 2=move_e, 3=move_w, 4=interact, 5=wait
+    max_turns=200,
+    step_penalty=-0.01,
+    game_state_size=1,
+)
 ```
+
+## Entity Type Enum
+
+| Type ID | Name | Glyph |
+|---------|------|-------|
+| 0 | (unused slot) | — |
+| 1 | player | `@` |
+| 2 | exit | `>` |
+| 3 | wanderer | `w` |
+
+## Tag Index Mapping
+
+| Tag Index | Name |
+|-----------|------|
+| 0 | player |
+| 1 | solid |
+| 2 | hazard |
+| 3 | pickup |
+| 4 | exit |
+| 5 | npc |
+
+## Property Index Mapping
+
+| Prop Index | Name | Used By |
+|-----------|------|---------|
+| 0 | direction | wanderer: 1=east, -1=west |
+| 1 | (unused) | — |
 
 ## Entities
 
-| Type | Tags | Glyph | Z-Order | Spawning |
-|------|------|-------|---------|----------|
-| `player` | `player` | `@` | 10 | Bottom-left quadrant, random empty cell |
-| `exit` | `exit` | `>` | 5 | Top-right quadrant, random empty cell |
-| `wanderer` | `hazard` | `w` | 5 | Center row (y=4 or y=5), random x. Starts moving east. |
-
-## Player Properties
-None. No properties needed for this game.
+| Type | Tags | Glyph | Spawning |
+|------|------|-------|----------|
+| player (1) | player (0) | `@` | Bottom-left quadrant (x < 5, y >= 5), random empty cell |
+| exit (2) | exit (4) | `>` | Top-right quadrant (x >= 5, y < 5), random empty cell |
+| wanderer (3) | hazard (2) | `w` | Center row (y=4 or y=5), random x. Starts with direction=1 (east). |
 
 ## Behaviors
 
-### `wanderer`
-Each turn, move one step in the entity's current direction (stored as a `direction` property: `1` for east, `-1` for west). After moving, check if the next step in the same direction would be out of bounds (x+direction < 0 or x+direction >= grid width). If so, reverse direction (`direction *= -1`). Uses `env.move_entity()` for movement.
+### wanderer (type 3)
+Each turn, move one step in the entity's current direction (property 0: 1=east, -1=west). After moving, check if the next step in the same direction would be out of bounds (x+direction < 0 or x+direction >= grid_w). If so, reverse direction (multiply by -1).
 
-## Event Handlers
+Use `move_entity(state, slot, x + direction, y)`.
 
-- **`input` (Player Movement)**: The game module MUST register an `input` event handler that moves the player. If action is `move_n`, attempt `env.move_entity(player.id, player.x, player.y - 1)`. Map `move_s` to +y, `move_e` to +x, `move_w` to -x. `wait` does nothing. `interact` does nothing. Out-of-bounds moves are handled safely by `env.move_entity()` returning False.
+## Turn Phases
 
-- **`collision` (player walks into hazard)**: If mover is `player` and any occupant is tagged `hazard`, call `env.end_game('lost')`.
+### Phase 1: Process Input
+- Actions 0–3 (move_n/s/e/w): Move player.
+- Actions 4–5: No-op.
 
-- **`collision` (hazard walks into player)**: If mover is tagged `hazard` and any occupant is tagged `player`, call `env.end_game('lost')`.
+### Phase 2: Run Behaviors
+- Iterate all alive entities. For type 3 (wanderer): execute wanderer behavior.
+- Use `jax.lax.switch` on entity_type to dispatch to the correct behavior function.
 
-- **`collision` (player walks into exit)**: If mover is `player` and any occupant is tagged `exit`, call `env.end_game('won')`.
-
-## Interact Mapping
-`interact` does nothing in this game.
+### Phase 3: Turn End
+- Check if player shares a cell with any entity tagged hazard (2). If yes, `status = -1` (lost).
+- Check if player shares a cell with exit entity. If yes, `status = 1` (won).
 
 ## Win Condition
-Player walks onto the exit tile. Triggered by collision handler above.
+Player walks onto the exit tile.
 
 ## Lose Condition
 Player collides with the wanderer (either player walks into wanderer, or wanderer walks into player).
+
+## game_state Slots
+None used.
 
 ## RL Evaluation Criteria
 
@@ -60,15 +96,15 @@ Player collides with the wanderer (either player walks into wanderer, or wandere
 | PPO win rate at 100k steps | >50% |
 | PPO learning delta (100k - 10k) | >15% |
 
-## Invariant Tests (game-specific)
+## Invariant Tests
 
 1. Exactly one wanderer exists at game start.
-2. Wanderer starts in the center rows (y=4 or y=5).
-3. Player starts in the bottom-left quadrant (x < 5, y >= 5).
-4. Exit is in the top-right quadrant (x >= 5, y < 5).
+2. Wanderer starts in center rows (y=4 or y=5).
+3. Player starts in bottom-left quadrant (x < 5, y >= 5).
+4. Exit is in top-right quadrant (x >= 5, y < 5).
 5. Player and wanderer do not start on the same cell.
 
 ## Notes
 - The wanderer's bounce pattern is deterministic — no randomness in its movement, only in initial x position.
-- The player must learn to time movement past the wanderer's patrol path.
 - Spawning quadrants ensure the player must cross the wanderer's path to reach the exit.
+- Collision detection is done in Turn End by checking if any hazard-tagged entity shares the player's cell.

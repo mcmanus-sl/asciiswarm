@@ -1,4 +1,1 @@
-agent_logs/
 .env
-__pycache__/
-*.egg-info/

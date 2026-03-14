@@ -1,64 +1,75 @@
 # Game Spec 06: Ice Sliding
 
 ## Overview
-The player slides in the chosen direction until hitting a solid obstacle or the grid edge. Rocks are placed to create a routing puzzle where the player must reach the exit by choosing directions carefully, knowing they will overshoot. This tests `before_move` chaining and momentum-style physics.
+The player slides in the chosen direction until hitting a solid obstacle or grid edge. Rocks create a routing puzzle where the player must choose directions carefully. Tests momentum-style physics via repeated `move_entity` calls.
 
 ## Grid
 - Dimensions: 10×10
 
-## GAME_CONFIG
+## EnvConfig
 
 ```python
-GAME_CONFIG = {
-    'grid': (10, 10),
-    'max_turns': 200,
-    'step_penalty': -0.01,
-    'player_properties': [],
-}
+CONFIG = EnvConfig(
+    grid_w=10, grid_h=10,
+    max_entities=16,       # player + exit + 8-12 rocks
+    max_stack=2,
+    num_entity_types=4,    # 0=unused, 1=player, 2=exit, 3=rock
+    num_tags=6,            # standard 6
+    num_props=1,
+    num_actions=6,         # standard 6
+    max_turns=200,
+    step_penalty=-0.01,
+    game_state_size=1,
+)
 ```
+
+## Entity Type Enum
+
+| Type ID | Name | Glyph |
+|---------|------|-------|
+| 0 | (unused) | — |
+| 1 | player | `@` |
+| 2 | exit | `>` |
+| 3 | rock | `O` |
 
 ## Entities
 
-| Type | Tags | Glyph | Z-Order | Spawning |
-|------|------|-------|---------|----------|
-| `player` | `player` | `@` | 10 | Bottom-left corner area: random cell in (0–2, 7–9) |
-| `exit` | `exit` | `>` | 5 | Top-right corner area: random cell in (7–9, 0–2) |
-| `rock` | `solid` | `O` | 5 | 8–12 rocks placed to create a solvable routing puzzle (see layout below) |
-
-## Player Properties
-None. No properties needed for this game.
-
-## Rock Placement
-
-Rocks are placed procedurally to ensure the puzzle is solvable. The placement algorithm:
-1. Place 8–12 rocks at random positions (via `env.random()`) avoiding the player's cell, the exit cell, and each other.
-2. Verify solvability: BFS over (x, y, direction) states where each state transition simulates a full slide. If the exit is reachable from the player's start, accept. Otherwise, regenerate.
-3. Maximum 100 regeneration attempts before falling back to a known-good hardcoded layout.
+| Type | Tags | Spawning |
+|------|------|----------|
+| player (1) | player (0) | Bottom-left area: random cell in (x=0–2, y=7–9) |
+| exit (2) | exit (4) | Top-right area: random cell in (x=7–9, y=0–2) |
+| rock (3) | solid (1) | 8–12 rocks, random positions. Not on player or exit cell. |
 
 ## Behaviors
-None. No entity has autonomous behavior.
 
-## Event Handlers
+None.
 
-- **`input` (Player Movement — Ice Sliding)**: The game module MUST register an `input` event handler that implements the sliding mechanic. When the player chooses a direction (`move_n`, `move_s`, `move_e`, `move_w`):
-  1. Compute the direction vector (dx, dy) from the action.
-  2. Repeatedly attempt `env.move_entity(player.id, player.x + dx, player.y + dy)`.
-  3. If the move succeeds, continue sliding (repeat step 2 from the new position).
-  4. If the move fails (out of bounds, or blocked by `solid` via `before_move`), stop. The player stays at the last valid position.
-  5. `wait` does nothing. `interact` does nothing.
+## Turn Phases
 
-- **`collision` (player slides onto exit)**: If mover is `player` and any occupant is tagged `exit`, call `env.end_game('won')`. Note: this fires during the slide loop, so the player stops on the exit tile.
+### Phase 1: Process Input (Ice Sliding)
+- Actions 0–3: Compute direction vector (dx, dy). Then **slide loop**: repeatedly call `move_entity(state, player_idx, x+dx, y+dy)`.
+  - If move succeeds: update position, continue sliding.
+  - If move fails (out of bounds or target cell has solid entity): stop. Player stays at last valid position.
+  - After each successful move, check if player is on exit cell. If yes, set `status = 1` and stop sliding.
+- The slide loop has a bounded iteration count (max `grid_w + grid_h` steps) implemented via `jax.lax.while_loop` or `jax.lax.fori_loop`.
+- Actions 4–5: No-op.
 
-- **`before_move` (solid blocks movement)**: If target cell contains any entity tagged `solid`, cancel the move. This is what stops the player's slide — hitting a rock.
+### Phase 2: Run Behaviors
+None.
 
-## Interact Mapping
-`interact` does nothing in this game.
+### Phase 3: Turn End
+Nothing.
 
-## Win Condition
-Player slides onto the exit tile. Triggered by collision handler during the slide loop.
+## Rock Placement (in `reset`)
 
-## Lose Condition
-None. This game cannot be lost. The engine truncates at `max_turns` (200).
+Rocks placed procedurally:
+1. Place 8–12 rocks at random positions avoiding player and exit cells.
+2. Verify solvability: BFS over `(x, y)` states where each transition simulates a full slide in each direction. If exit reachable from player start, accept.
+3. This solvability check can be Python-side (before JIT), since `reset` only needs to produce a valid initial state.
+4. Max 100 regeneration attempts, then fall back to a known-good layout.
+
+## game_state Slots
+None used.
 
 ## RL Evaluation Criteria
 
@@ -68,17 +79,15 @@ None. This game cannot be lost. The engine truncates at `max_turns` (200).
 | PPO win rate at 100k steps | >30% |
 | PPO learning delta (100k - 10k) | >10% |
 
-## Invariant Tests (game-specific)
+## Invariant Tests
 
-1. Between 8 and 12 rocks exist at game start.
-2. Player starts in the bottom-left area (x <= 2, y >= 7).
-3. Exit is in the top-right area (x >= 7, y <= 2).
-4. No rock occupies the player's starting cell or the exit cell.
-5. The exit is reachable from the player's start via ice-sliding BFS.
+1. Between 8 and 12 rocks at game start.
+2. Player starts in bottom-left area (x <= 2, y >= 7).
+3. Exit in top-right area (x >= 7, y <= 2).
+4. No rock on player's cell or exit cell.
+5. Exit reachable from player via ice-sliding BFS.
 
 ## Notes
-- The sliding mechanic is implemented entirely in the `input` handler using repeated `env.move_entity()` calls. Each call triggers `before_move` and `collision` normally.
-- `end_game('won')` during the slide loop stops further movement because the engine ignores actions after game end.
-- The indirect movement (you choose direction but can't choose distance) is the core learning challenge. PPO must learn that moving east might slide past the target.
-- Random agent win rate is nonzero because random slides can land on the exit by chance, especially with rocks creating stop points near it.
-- Solvability verification ensures the puzzle always has a solution, but finding it requires planning multiple slides ahead.
+- The sliding loop is the key JIT challenge — must be a bounded loop (`jax.lax.fori_loop` with max iterations = grid dimension).
+- Indirect movement (choose direction, can't choose distance) is the core learning challenge.
+- `status = 1` during slide stops further movement because subsequent moves check `status != 0`.

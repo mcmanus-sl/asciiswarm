@@ -1,104 +1,110 @@
 # Game Spec 04: Dungeon Crawl
 
 ## Overview
-A multi-room dungeon with combat, health management, and three enemy types. The player must fight or avoid enemies, collect health potions, and reach the exit on the far side of the map. This is the first game intended for AGENT SWARM to build autonomously.
+A multi-room dungeon with combat, health management, and three enemy types. The player must fight or avoid enemies, collect health potions, and reach the exit. First game intended for AGENT SWARM to build autonomously.
 
 ## Grid
 - Dimensions: 16×16
 
-## GAME_CONFIG
+## EnvConfig
 
 ```python
-GAME_CONFIG = {
-    'tags': ['player', 'solid', 'hazard', 'pickup', 'exit'],
-    'grid': (16, 16),
-    'max_turns': 500,
-    'step_penalty': -0.005,
-    'player_properties': [
-        {'key': 'health', 'max': 10},
-        {'key': 'attack', 'max': 5},
-    ],
-}
+CONFIG = EnvConfig(
+    grid_w=16, grid_h=16,
+    max_entities=128,      # walls + enemies + potions + player + exit
+    max_stack=3,
+    num_entity_types=7,    # 0=unused, 1=player, 2=exit, 3=wall, 4=wanderer, 5=chaser, 6=sentinel, 7=potion
+    num_tags=6,            # 0=player, 1=solid, 2=hazard, 3=pickup, 4=exit, 5=npc
+    num_props=3,           # 0=health, 1=attack, 2=direction (for wanderer)
+    num_actions=6,         # standard 6
+    max_turns=500,
+    step_penalty=-0.005,
+    game_state_size=2,     # 0=enemies_killed, 1=potions_used
+)
 ```
+
+## Entity Type Enum
+
+| Type ID | Name | Glyph |
+|---------|------|-------|
+| 0 | (unused) | — |
+| 1 | player | `@` |
+| 2 | exit | `>` |
+| 3 | wall | `#` |
+| 4 | wanderer | `w` |
+| 5 | chaser | `c` |
+| 6 | sentinel | `s` |
+| 7 | potion | `!` |
+
+## Tag Index Mapping
+
+Standard 6-tag layout (same as specs 01–03).
+
+## Property Index Mapping
+
+| Prop Index | Name | Used By |
+|-----------|------|---------|
+| 0 | health | player (init 10, max 10), wanderer (1), chaser (2), sentinel (3) |
+| 1 | attack | player (init 2), wanderer (1), chaser (2), sentinel (1) |
+| 2 | direction | wanderer: random walk direction |
+
+## Player Properties (for scalar observation)
+
+| Key | Max | Description |
+|-----|-----|-------------|
+| health (prop 0) | 10 | Current HP |
+| attack (prop 1) | 5 | Damage dealt |
 
 ## Entities
 
-| Type | Tags | Glyph | Z-Order | Spawning |
-|------|------|-------|---------|----------|
-| `player` | `player` | `@` | 10 | Center of the first (leftmost) room |
-| `wall` | `solid` | `#` | 1 | Room boundaries and corridor walls |
-| `floor` | *(inert, no tags required — use a special `inert` tag)* | `.` | 0 | Interior of rooms and corridors. NOTE: you may also simply leave these cells empty and rely on the renderer's default `'.'` character. Either approach is acceptable. |
-| `wanderer` | `hazard` | `w` | 5 | 1–2 per room, random empty cell in room |
-| `chaser` | `hazard` | `c` | 5 | 1 per room (rooms 3+), random empty cell |
-| `sentinel` | `hazard` | `s` | 5 | 1 per room (rooms 4+), random empty cell |
-| `potion` | `pickup` | `!` | 3 | 1–2 per room, random empty cell |
-| `exit` | `exit` | `>` | 5 | Center of the last (rightmost) room |
-
-## Player Properties
-
-| Key | Initial Value | Max (for normalization) | Description |
-|-----|--------------|------------------------|-------------|
-| `health` | 10 | 10 | Current HP |
-| `attack` | 2 | 5 | Damage dealt per hit |
-
-`player_properties` config for observation: `[{'key': 'health', 'max': 10}, {'key': 'attack', 'max': 5}]`.
+| Type | Tags | Spawning |
+|------|------|----------|
+| player (1) | player (0) | Center of first room |
+| wall (3) | solid (1) | Room boundaries and corridors |
+| wanderer (4) | hazard (2) | 1–2 per room, random empty cell |
+| chaser (5) | hazard (2) | 1 per room (rooms 3+) |
+| sentinel (6) | hazard (2) | 1 per room (rooms 4+) |
+| potion (7) | pickup (3) | 1–2 per room |
+| exit (2) | exit (4) | Center of last room |
 
 ## Room Generation
 
-Generate 3–5 rectangular rooms (random sizes within 4×4 to 6×6) placed non-overlapping on the grid. Connect adjacent rooms with corridors (1 tile wide). All rooms must be connected — verify with BFS. Use `env.random()` for all random placement.
+Generate 3–5 rectangular rooms (4×4 to 6×6), non-overlapping. Connect with 1-tile corridors. All rooms must be connected (verify via Python-side BFS before JIT). Use `jax.random` for placement.
 
-## Behaviors
+## Behavior Dispatch Table
 
-### `wanderer`
-Each turn, pick a random cardinal direction (via `env.random()`). Attempt to move. If blocked (by `solid` or out of bounds), stay put.
+| Type ID | Behavior |
+|---------|----------|
+| 4 (wanderer) | Random cardinal direction (via rng_key). Attempt move. If blocked, stay. |
+| 5 (chaser) | If player within Manhattan distance 5: move one step toward player (prefer axis with greater distance, break ties via rng_key). Otherwise: random walk like wanderer. |
+| 6 (sentinel) | Does not move. Stationary. |
 
-### `chaser`
-If the player is within Manhattan distance 5, move one step toward the player (prefer axis with greater distance, break ties via `env.random()`). Otherwise, behave like `wanderer`.
+## Turn Phases
 
-### `sentinel`
-Does not move. On each turn, if the player is within Manhattan distance 2, emit a custom `sentinel_alert` event with the sentinel's position. Other chasers within the same room could optionally respond to this (stretch goal — not required for pass).
+### Phase 1: Process Input
+- Move player in chosen direction. Before completing move, check target cell:
+  - If target has solid (1) entity (wall): cancel move.
+  - If target has hazard (2) entity: cancel move, execute combat (see below).
+  - If target has pickup (3) entity: move succeeds, pick up potion.
+  - If target has exit (4) entity: move succeeds, `status = 1`.
 
-## Event Handlers
+**Combat**: Reduce player health by enemy attack. Reduce enemy health by player attack. If enemy health ≤ 0, destroy enemy. If player health ≤ 0, `status = -1`.
 
-### `input` (Player Movement)
-The game module MUST register an `input` event handler that moves the player. If action is `move_n`, attempt `env.move_entity(player.id, player.x, player.y - 1)`. Map `move_s` to +y, `move_e` to +x, `move_w` to -x. `wait` and `interact` do nothing. Out-of-bounds or blocked moves are handled safely by `env.move_entity()` returning False or being cancelled by `before_move` handlers.
+**Potion pickup**: Increase player health by 3 (cap at 10). Destroy potion. Add 0.1 to `reward_acc`.
 
-### `collision` (player walks into hazard)
-If mover is `player` and any occupant is tagged `hazard`:
-- Cancel the move (player stays in place).
-- Reduce player `health` by occupant's `attack` property (default 1).
-- Reduce occupant `health` by player `attack` property.
-- If occupant `health` ≤ 0, destroy the occupant.
-- If player `health` ≤ 0, call `env.end_game('lost')`.
+### Phase 2: Run Behaviors
+- `jax.lax.fori_loop` over entity slots. For each alive entity, `jax.lax.switch(entity_type, [noop, noop, noop, noop, wanderer_fn, chaser_fn, sentinel_fn, noop])`.
+- After each enemy moves, check if enemy shares cell with player → combat (enemy attacks player).
 
-### `collision` (hazard walks into player)
-If mover is tagged `hazard` and any occupant is tagged `player`:
-- Cancel the move.
-- Same damage exchange as above.
+### Phase 3: Turn End
+Nothing extra.
 
-### `collision` (player walks into pickup)
-If mover is `player` and any occupant is tagged `pickup`:
-- Allow the move (do NOT cancel).
-- Increase player `health` by potion's `heal_amount` property (default 3), capped at max health.
-- Destroy the potion.
-- Emit `reward` event with `{ 'amount': 0.1 }`.
+## game_state Slots
 
-### `collision` (player walks into exit)
-If mover is `player` and any occupant is tagged `exit`:
-- Call `env.end_game('won')`.
-- Emit `reward` event with `{ 'amount': 1.0 }`.
-
-### `before_move` (solid blocks all movement)
-If target cell contains any entity tagged `solid`, cancel the move.
-
-## Interact Mapping
-`interact` does nothing in this game. All interaction is via walk-into collision.
-
-## Win Condition
-Player walks onto the exit tile.
-
-## Lose Condition
-Player health reaches 0.
+| Index | Name |
+|-------|------|
+| 0 | enemies_killed |
+| 1 | potions_used |
 
 ## RL Evaluation Criteria
 
@@ -107,18 +113,16 @@ Player health reaches 0.
 | Random agent win rate | 1–10% |
 | PPO learning delta (500k vs 50k) | >0 |
 
-## Invariant Tests (game-specific)
+## Invariant Tests
 
-These are registered by the game module using the invariant test framework:
-1. All rooms are connected (BFS from player start reaches exit).
-2. Every room contains at least one potion.
-3. Total enemy count is between 5 and 20.
+1. All rooms connected (BFS from player reaches exit).
+2. Every room has at least one potion.
+3. Total enemies between 5 and 20.
 4. Player starts with health > 0.
-5. No enemy spawns in the same cell as the player.
-6. No enemy spawns in a corridor (only in rooms).
+5. No enemy spawns on player's cell.
 
 ## Notes
-- Wall collision uses `before_move`, not `collision`, because walls don't need entity-to-entity interaction logic — they just block movement unconditionally.
-- The damage exchange on collision means the player can "attack" by walking into enemies. This is the simplest possible combat system.
-- Enemy `health` defaults: wanderer=1, chaser=2, sentinel=3.
-- Enemy `attack` defaults: wanderer=1, chaser=2, sentinel=1.
+- Combat is walk-into: player attempts to move into enemy cell, move is cancelled, damage exchanged.
+- Enemy health defaults: wanderer=1, chaser=2, sentinel=3.
+- Enemy attack defaults: wanderer=1, chaser=2, sentinel=1.
+- Room generation happens in `reset()` — this can be Python-side before the state is JIT'd, or use `jax.lax.while_loop` for procedural generation within JAX.
