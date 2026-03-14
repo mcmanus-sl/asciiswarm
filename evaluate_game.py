@@ -1,5 +1,6 @@
 """Behavioral Compiler — RL-TDD evaluator with 5-layer diagnostics."""
 
+import os
 import sys
 import json
 import importlib
@@ -294,6 +295,14 @@ def evaluate(module_path: str):
     report["invariants"] = run_invariants(game_module)
     print(f"  {report['invariants']['passed']}/{report['invariants']['total']} passed "
           f"({time.time()-t0:.1f}s)\n")
+
+    # Save weights if PPO passed
+    if report["ppo"]["pass"]:
+        os.makedirs("weights", exist_ok=True)
+        game_name = module_path.split(".")[-1]
+        weight_path = f"weights/{game_name}.eqx"
+        eqx.tree_serialise_leaves(weight_path, network)
+        print(f"  Weights saved: {weight_path}\n")
 
     # Overall
     report["overall_pass"] = all([
