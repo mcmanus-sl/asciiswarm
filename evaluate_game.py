@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 import equinox as eqx
 
+from jaxswarm.core.obs import get_obs
 from jaxswarm.train import train, TrainConfig
 
 
@@ -54,26 +55,23 @@ def run_random_agent(game_module, num_episodes=1000):
 
     def run_episode(key):
         k_reset, k_actions = jax.random.split(key)
-        state, obs = game_module.reset(k_reset)
+        state, _ = game_module.reset(k_reset)
 
         def step_fn(carry, action_key):
-            state, obs, cumulative_reward, done_flag = carry
+            state, cumulative_reward, done_flag = carry
             action = jax.random.randint(action_key, (), 0, config.num_actions)
-            new_state, new_obs, reward, done = game_module.step(state, action)
-            # If already done, don't update (done_flag is scalar per episode)
+            new_state, _obs, reward, done = game_module.step(state, action)
+            # If already done, don't update
             state = jax.tree.map(
                 lambda n, o: jnp.where(done_flag, o, n), new_state, state
             )
-            obs = jax.tree.map(
-                lambda n, o: jnp.where(done_flag, o, n), new_obs, obs
-            )
             cumulative_reward = jnp.where(done_flag, cumulative_reward, cumulative_reward + reward)
             done_flag = done_flag | done
-            return (state, obs, cumulative_reward, done_flag), None
+            return (state, cumulative_reward, done_flag), None
 
         action_keys = jax.random.split(k_actions, config.max_turns)
-        init_carry = (state, obs, jnp.float32(0.0), jnp.bool_(False))
-        (final_state, _, cumulative_reward, terminated), _ = jax.lax.scan(
+        init_carry = (state, jnp.float32(0.0), jnp.bool_(False))
+        (final_state, cumulative_reward, terminated), _ = jax.lax.scan(
             step_fn, init_carry, action_keys
         )
 
@@ -158,25 +156,24 @@ def run_forensics(game_module, network, num_episodes=100):
         state, obs = game_module.reset(k_reset)
 
         def step_fn(carry, rng):
-            state, obs, done_flag, cumulative_reward = carry
+            state, done_flag, cumulative_reward = carry
+            # Regenerate obs from state (lightweight — get_obs is vectorized)
+            obs = get_obs(state, config)
             logits, _ = network(obs)
             action = jax.random.categorical(rng, logits)
 
-            new_state, new_obs, reward, done = game_module.step(state, action)
+            new_state, _new_obs, reward, done = game_module.step(state, action)
             state = jax.tree.map(
                 lambda n, o: jnp.where(done_flag, o, n), new_state, state
-            )
-            obs = jax.tree.map(
-                lambda n, o: jnp.where(done_flag, o, n), new_obs, obs
             )
             cumulative_reward = jnp.where(done_flag, cumulative_reward, cumulative_reward + reward)
             saved_action = jnp.where(done_flag, jnp.int32(-1), action)
             done_flag = done_flag | done
-            return (state, obs, done_flag, cumulative_reward), saved_action
+            return (state, done_flag, cumulative_reward), saved_action
 
         action_keys = jax.random.split(k_act, config.max_turns)
-        init_carry = (state, obs, jnp.bool_(False), jnp.float32(0.0))
-        (final_state, _, _, cumulative_reward), actions = jax.lax.scan(
+        init_carry = (state, jnp.bool_(False), jnp.float32(0.0))
+        (final_state, _, cumulative_reward), actions = jax.lax.scan(
             step_fn, init_carry, action_keys
         )
 
