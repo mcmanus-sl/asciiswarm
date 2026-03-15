@@ -1,6 +1,7 @@
 """Replay trained PPO agents on Games 01-06, render ASCII grids → MP4 video."""
 
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import subprocess
 import importlib
 import tempfile

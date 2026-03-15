@@ -1,6 +1,7 @@
 """Behavioral Compiler — RL-TDD evaluator with 5-layer diagnostics."""
 
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import sys
 import json
 import importlib

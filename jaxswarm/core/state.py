@@ -19,6 +19,7 @@ class EnvConfig:
     step_penalty: float
     game_state_size: int
     prop_maxes: tuple
+    max_behaviors: int = 8  # behavior loop bound — only first N slots run dispatch
 
 
 @chex.dataclass

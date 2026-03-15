@@ -23,6 +23,7 @@ CONFIG = EnvConfig(
     step_penalty=-0.005,
     game_state_size=2,     # 0=enemies_killed, 1=potions_used
     prop_maxes=(10.0, 5.0, 4.0),
+    max_behaviors=16,
 )
 
 ACTION_NAMES = ["move_n", "move_s", "move_e", "move_w", "interact", "wait"]
@@ -98,7 +99,62 @@ def _is_open(x, y):
 def reset(rng_key: jax.Array) -> tuple[EnvState, dict]:
     state = init_state(CONFIG, rng_key)
     keys = jax.random.split(rng_key, 20)
-    ki = 0
+    # Key assignments preserved from original to keep deterministic trace valid:
+    # keys[0]=player, keys[1]=exit, keys[2..17]=rooms loop, keys[18]=state.rng_key
+
+    # --- Behavior entities first (player + NPCs) so they occupy low slots ---
+
+    # Player in random position within room 1 (x=1-6, y=1-6)
+    player_tags = jnp.zeros(CONFIG.num_tags, dtype=jnp.bool_).at[0].set(True)
+    player_props = jnp.zeros(CONFIG.num_props, dtype=jnp.float32)
+    player_props = player_props.at[0].set(10.0)  # health
+    player_props = player_props.at[1].set(2.0)   # attack
+    k_px, k_py, k_rest = jax.random.split(keys[0], 3)
+    player_x = jax.random.randint(k_px, (), 1, 7)
+    player_y = jax.random.randint(k_py, (), 1, 7)
+    state, player_slot = create_entity(
+        state, CONFIG, jnp.int32(1), player_x, player_y, player_tags, player_props
+    )
+    state = state.replace(player_idx=player_slot)
+
+    # Helper to place entity in random room position
+    hazard_tags = jnp.zeros(CONFIG.num_tags, dtype=jnp.bool_).at[2].set(True)
+    pickup_tags = jnp.zeros(CONFIG.num_tags, dtype=jnp.bool_).at[3].set(True)
+
+    def _place_in_room(state, key, room_idx, etype, tags, props):
+        rx1, ry1, rx2, ry2 = ROOMS[room_idx]
+        k1, k2 = jax.random.split(key)
+        x = jax.random.randint(k1, (), rx1, rx2 + 1)
+        y = jax.random.randint(k2, (), ry1, ry2 + 1)
+        state, _ = create_entity(state, CONFIG, jnp.int32(etype), x, y, tags, props)
+        return state
+
+    # Place NPCs (wanderers, chasers, sentinels) — use same keys as original
+    # Original loop: ki=2 + room_idx*4 + {0=wanderer, 1=chaser, 2=sentinel, 3=potion}
+    for room_idx in range(4):
+        ki_base = 2 + room_idx * 4
+        # Wanderer in each room
+        w_props = jnp.zeros(CONFIG.num_props, dtype=jnp.float32)
+        w_props = w_props.at[0].set(1.0).at[1].set(1.0).at[2].set(1.0)
+        state = _place_in_room(state, keys[ki_base], room_idx, 4, hazard_tags, w_props)
+
+        # Chaser in rooms 2+ (idx >= 1)
+        c_props = jnp.zeros(CONFIG.num_props, dtype=jnp.float32)
+        c_props = c_props.at[0].set(2.0).at[1].set(2.0)
+        new_state = _place_in_room(state, keys[ki_base + 1], room_idx, 5, hazard_tags, c_props)
+        state = jax.tree.map(
+            lambda n, o: jnp.where(room_idx >= 1, n, o), new_state, state
+        )
+
+        # Sentinel in rooms 3+ (idx >= 2)
+        s_props = jnp.zeros(CONFIG.num_props, dtype=jnp.float32)
+        s_props = s_props.at[0].set(3.0).at[1].set(1.0)
+        new_state = _place_in_room(state, keys[ki_base + 2], room_idx, 6, hazard_tags, s_props)
+        state = jax.tree.map(
+            lambda n, o: jnp.where(room_idx >= 2, n, o), new_state, state
+        )
+
+    # --- Static entities below (walls, exit, potions) ---
 
     # Place walls: fill entire grid with walls, then carve rooms and corridors
     wall_tags = jnp.zeros(CONFIG.num_tags, dtype=jnp.bool_).at[1].set(True)
@@ -121,75 +177,23 @@ def reset(rng_key: jax.Array) -> tuple[EnvState, dict]:
         place_walls, state, jnp.arange(CONFIG.grid_w * CONFIG.grid_h, dtype=jnp.int32)
     )
 
-    # Player in random position within room 1 (x=1-6, y=1-6)
-    player_tags = jnp.zeros(CONFIG.num_tags, dtype=jnp.bool_).at[0].set(True)
-    player_props = jnp.zeros(CONFIG.num_props, dtype=jnp.float32)
-    player_props = player_props.at[0].set(10.0)  # health
-    player_props = player_props.at[1].set(2.0)   # attack
-    k_px, k_py, k_rest = jax.random.split(keys[ki], 3)
-    player_x = jax.random.randint(k_px, (), 1, 7)
-    player_y = jax.random.randint(k_py, (), 1, 7)
-    ki += 1
-    state, player_slot = create_entity(
-        state, CONFIG, jnp.int32(1), player_x, player_y, player_tags, player_props
-    )
-    state = state.replace(player_idx=player_slot)
-
     # Exit in random position within room 4 (x=9-14, y=9-14)
     exit_tags = jnp.zeros(CONFIG.num_tags, dtype=jnp.bool_).at[4].set(True)
     exit_props = jnp.zeros(CONFIG.num_props, dtype=jnp.float32)
-    k_ex, k_ey = jax.random.split(keys[ki])
+    k_ex, k_ey = jax.random.split(keys[1])
     exit_x = jax.random.randint(k_ex, (), 9, 15)
     exit_y = jax.random.randint(k_ey, (), 9, 15)
-    ki += 1
     state, _ = create_entity(
         state, CONFIG, jnp.int32(2), exit_x, exit_y, exit_tags, exit_props
     )
 
-    # Helper to place entity in random room position
-    hazard_tags = jnp.zeros(CONFIG.num_tags, dtype=jnp.bool_).at[2].set(True)
-    pickup_tags = jnp.zeros(CONFIG.num_tags, dtype=jnp.bool_).at[3].set(True)
-
-    def _place_in_room(state, key, room_idx, etype, tags, props):
-        rx1, ry1, rx2, ry2 = ROOMS[room_idx]
-        k1, k2 = jax.random.split(key)
-        x = jax.random.randint(k1, (), rx1, rx2 + 1)
-        y = jax.random.randint(k2, (), ry1, ry2 + 1)
-        state, _ = create_entity(state, CONFIG, jnp.int32(etype), x, y, tags, props)
-        return state
-
-    # Place enemies and potions in each room
+    # Potions in each room (keys[ki_base + 3] for each room)
     for room_idx in range(4):
-        # Wanderer in each room
-        w_props = jnp.zeros(CONFIG.num_props, dtype=jnp.float32)
-        w_props = w_props.at[0].set(1.0).at[1].set(1.0).at[2].set(1.0)
-        state = _place_in_room(state, keys[ki], room_idx, 4, hazard_tags, w_props)
-        ki += 1
-
-        # Chaser in rooms 2+ (idx >= 1)
-        c_props = jnp.zeros(CONFIG.num_props, dtype=jnp.float32)
-        c_props = c_props.at[0].set(2.0).at[1].set(2.0)
-        new_state = _place_in_room(state, keys[ki], room_idx, 5, hazard_tags, c_props)
-        state = jax.tree.map(
-            lambda n, o: jnp.where(room_idx >= 1, n, o), new_state, state
-        )
-        ki += 1
-
-        # Sentinel in rooms 3+ (idx >= 2)
-        s_props = jnp.zeros(CONFIG.num_props, dtype=jnp.float32)
-        s_props = s_props.at[0].set(3.0).at[1].set(1.0)
-        new_state = _place_in_room(state, keys[ki], room_idx, 6, hazard_tags, s_props)
-        state = jax.tree.map(
-            lambda n, o: jnp.where(room_idx >= 2, n, o), new_state, state
-        )
-        ki += 1
-
-        # Potion in each room
+        ki_base = 2 + room_idx * 4
         p_props = jnp.zeros(CONFIG.num_props, dtype=jnp.float32)
-        state = _place_in_room(state, keys[ki], room_idx, 7, pickup_tags, p_props)
-        ki += 1
+        state = _place_in_room(state, keys[ki_base + 3], room_idx, 7, pickup_tags, p_props)
 
-    state = state.replace(rng_key=keys[ki])
+    state = state.replace(rng_key=keys[18])
     state = rebuild_grid(state, CONFIG)
     obs = get_obs(state, CONFIG)
     return state, obs
@@ -335,7 +339,7 @@ def _run_behaviors(state: EnvState) -> EnvState:
         )
         return state
 
-    return jax.lax.fori_loop(0, CONFIG.max_entities, loop_body, state)
+    return jax.lax.fori_loop(0, CONFIG.max_behaviors, loop_body, state)
 
 
 def step(state: EnvState, action: jnp.int32) -> tuple[EnvState, dict, jnp.float32, jnp.bool_]:

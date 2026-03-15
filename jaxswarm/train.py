@@ -1,5 +1,10 @@
 """PureJaxRL PPO training loop — entire graph compiled to XLA."""
 
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+import time
+
 import jax
 import jax.numpy as jnp
 import equinox as eqx
@@ -244,4 +249,12 @@ def train(game_module, train_config: TrainConfig = TrainConfig(), *, key, win_ra
             "win_rate": win_rate,
         }
 
-    return _train_loop(network, opt_state, env_states, env_obs, k3)
+    t0 = time.time()
+    result = _train_loop(network, opt_state, env_states, env_obs, k3)
+    # Force sync for accurate timing
+    jax.block_until_ready(result)
+    elapsed = time.time() - t0
+    total_steps = train_config.num_updates * train_config.num_steps * train_config.num_envs
+    sps = total_steps / elapsed
+    print(f"  Global SPS: {sps:,.0f} steps/sec ({total_steps:,} steps in {elapsed:.1f}s)")
+    return result
