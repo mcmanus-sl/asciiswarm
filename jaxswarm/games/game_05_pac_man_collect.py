@@ -26,39 +26,23 @@ CONFIG = EnvConfig(
 
 ACTION_NAMES = ["move_n", "move_s", "move_e", "move_w", "interact", "wait"]
 
-# Deterministic trace: 3 full boustrophedon passes through the 10x10 interior.
-# Each pass = 10*9 + 9 = 99 steps + 10 to go back to (1,1) = ~109.
-# 3 passes = ~327 steps + setup. Fits in 400 turns.
-# The cross walls block some directions, but 3 passes from different starting
-# corners should cover all cells by approaching from multiple angles.
+# Deterministic trace: 4 brute-force boustrophedon passes from different corners.
+# Ghosts gated to every 10th turn. Walls block some horizontal traversals at y=3-8
+# (vertical wall at x=5) and y=5 (horizontal wall at x=3-8), but multiple passes
+# from different angles cover all cells.
+# Player starts at (6,6) for seed 0.
 _trace = []
-# Pass 1: from (6,6) go to (1,10), sweep northward
-_trace += [1]*4 + [3]*5  # to (1,10): 9
-for row in range(10):
-    if row % 2 == 0:
-        _trace += [2]*9  # east
-    else:
-        _trace += [3]*9  # west
-    if row < 9:
-        _trace += [0]  # north
-# 9 + 99 = 108. At y=1. Pass 2: sweep southward
+# Pass 1: go to (1,10), sweep northward
+_trace += [1]*4 + [3]*5   # to (1,10): 9 steps
 for row in range(10):
     if row % 2 == 0:
         _trace += [2]*9
     else:
         _trace += [3]*9
-    if row < 9:
-        _trace += [1]
-# 108 + 99 = 207. At y=10. Pass 3: go to (10,10), sweep northward via west
-_trace += [2]*9  # east to x=10: 216
-for row in range(10):
-    if row % 2 == 0:
-        _trace += [3]*9  # west
-    else:
-        _trace += [2]*9  # east
     if row < 9:
         _trace += [0]
-# 216 + 99 = 315. Pass 4: sweep southward (opposite direction)
+# Pass 2: go to (10,1), sweep southward
+_trace += [2]*9 + [0]*9   # to (10,1): 18 steps (wall bumps)
 for row in range(10):
     if row % 2 == 0:
         _trace += [3]*9
@@ -66,27 +50,35 @@ for row in range(10):
         _trace += [2]*9
     if row < 9:
         _trace += [1]
-# Remaining dots: row 1 x=2-9 (blocked by chaser at 1,1 and patroller at 10,1),
-# and cross gap (5,5)(6,5).
-# Navigate to (2,2), north to (2,1), east to (4,1) [Q1 row 1 dots].
-# Then south, through cross gap, east to Q2, north to row 1, collect Q2 dots.
-# Finally collect (5,5)/(6,5).
-_trace += [3]*9 + [0]*8  # west to x=1, north to y=2 (not y=1, avoid chaser)
-_trace += [2]*1 + [0]*1  # to (2,2), north to (2,1)
-_trace += [2]*2  # east to (4,1) — collect dots x=2,3,4 on row 1
-# Can't go east past x=4 because wall at x=5 y=3 blocks... wait, x=5 on y=1 is clear!
-# Vertical wall is at x=5 y=3-4 and y=7-8, NOT y=1. So we can sweep through.
-_trace += [2]*5  # east to (9,1) — collect dots x=5,6,7,8,9 if no ghost blocks
-# Patroller at (10,1) blocks going further east.
-# Now collect cross gap: go south to y=4, go to x=5, south to (5,5)
-_trace += [1]*3  # south to y=4
-_trace += [3]*4  # west to x=5
-_trace += [1]*1  # south to (5,5)... wait, wall at (5,4)? No, vertical wall is at y=3,4. y=5 is gap.
-# Actually going south from (5,4) puts us at (5,5). Then west to collect... no.
-# The player is at (5,4) after west. South goes to (5,5) — collect that dot.
-# Then east to (6,5) — collect that dot. WIN!
-_trace += [2]*1  # east to (6,5) — collect!
-_trace += [3]*1  # west to (5,5) — collect! WIN!
+# Pass 3: from wherever, sweep northward
+for row in range(10):
+    if row % 2 == 0:
+        _trace += [2]*9
+    else:
+        _trace += [3]*9
+    if row < 9:
+        _trace += [0]
+# Pass 4: sweep southward
+for row in range(10):
+    if row % 2 == 0:
+        _trace += [3]*9
+    else:
+        _trace += [2]*9
+    if row < 9:
+        _trace += [1]
+# Phase 5: Targeted cleanup of cross-wall cells that sweeps miss.
+# Remaining: left half y=3-5, gap cells (5,5)(6,5).
+_trace += [3]*9 + [0]*9   # go to (1,1)
+_trace += [1]*2            # south to (1,3)
+_trace += [2]*3            # east to (4,3) — collects (1,3)(2,3)(3,3)(4,3) if present
+_trace += [1]*1            # south to (4,4)
+_trace += [3]*3            # west to (1,4) — collects (4,4)(3,4)(2,4)(1,4)
+_trace += [1]*1            # south to (1,5)
+_trace += [2]*1            # east to (2,5)
+_trace += [1]*1            # south to (2,6)
+_trace += [2]*3            # east to (5,6) — through gap
+_trace += [0]*1            # north to (5,5) — gap cell
+_trace += [2]*1            # east to (6,5) — gap cell
 DETERMINISTIC_TRACE = _trace[:495]
 
 
@@ -124,39 +116,59 @@ def reset(rng_key: jax.Array) -> tuple[EnvState, dict]:
         place_walls, state, jnp.arange(CONFIG.grid_w * CONFIG.grid_h, dtype=jnp.int32)
     )
 
-    # Player at center (6, 6)
+    # Compute all positions upfront to avoid overlaps
+    k_px, k_py, k_rest = jax.random.split(rng_key, 3)
+    player_x = jax.random.randint(k_px, (), 1, 11)
+    player_y = jax.random.randint(k_py, (), 1, 11)
+    # Fallback to (6,6) if on a wall
+    is_wall = _is_wall_cell(player_x, player_y)
+    player_x = jnp.where(is_wall, jnp.int32(6), player_x)
+    player_y = jnp.where(is_wall, jnp.int32(6), player_y)
+
+    k_cx, k_cy, k_rest = jax.random.split(k_rest, 3)
+    chaser_x = jax.random.randint(k_cx, (), 1, 5)
+    chaser_y = jax.random.randint(k_cy, (), 1, 5)
+
+    k_ptx, k_pty, k_rest = jax.random.split(k_rest, 3)
+    patroller_x = jax.random.randint(k_ptx, (), 7, 11)
+    patroller_y = jax.random.randint(k_pty, (), 1, 5)
+
+    # Shift player to (6,6) if overlapping with any ghost
+    on_ghost = ((player_x == chaser_x) & (player_y == chaser_y)) | \
+               ((player_x == patroller_x) & (player_y == patroller_y))
+    player_x = jnp.where(on_ghost, jnp.int32(6), player_x)
+    player_y = jnp.where(on_ghost, jnp.int32(6), player_y)
+
     player_tags = jnp.zeros(CONFIG.num_tags, dtype=jnp.bool_).at[0].set(True)
     player_props = jnp.zeros(CONFIG.num_props, dtype=jnp.float32)
     state, player_slot = create_entity(
-        state, CONFIG, jnp.int32(1), jnp.int32(6), jnp.int32(6), player_tags, player_props
+        state, CONFIG, jnp.int32(1), player_x, player_y, player_tags, player_props
     )
     state = state.replace(player_idx=player_slot)
 
-    # Chaser at (1, 1)
     hazard_tags = jnp.zeros(CONFIG.num_tags, dtype=jnp.bool_).at[2].set(True)
     chaser_props = jnp.zeros(CONFIG.num_props, dtype=jnp.float32)
     state, _ = create_entity(
-        state, CONFIG, jnp.int32(3), jnp.int32(1), jnp.int32(1), hazard_tags, chaser_props
+        state, CONFIG, jnp.int32(3), chaser_x, chaser_y, hazard_tags, chaser_props
     )
 
-    # Patroller at (10, 1)
     patroller_props = jnp.zeros(CONFIG.num_props, dtype=jnp.float32)
     patroller_props = patroller_props.at[0].set(0.0)  # direction: east
     patroller_props = patroller_props.at[1].set(0.0)  # steps: 0
     state, _ = create_entity(
-        state, CONFIG, jnp.int32(4), jnp.int32(10), jnp.int32(1), hazard_tags, patroller_props
+        state, CONFIG, jnp.int32(4), patroller_x, patroller_y, hazard_tags, patroller_props
     )
 
     # Place dots on all empty cells (not wall, player, chaser, patroller)
     dot_tags = jnp.zeros(CONFIG.num_tags, dtype=jnp.bool_).at[3].set(True)
     dot_props = jnp.zeros(CONFIG.num_props, dtype=jnp.float32)
 
-    # Special positions to skip
-    special_cells = jnp.array([
-        [6, 6],   # player
-        [1, 1],   # chaser
-        [10, 1],  # patroller
-    ], dtype=jnp.int32)
+    # Special positions to skip (use actual random positions)
+    special_cells = jnp.stack([
+        jnp.array([player_x, player_y], dtype=jnp.int32),
+        jnp.array([chaser_x, chaser_y], dtype=jnp.int32),
+        jnp.array([patroller_x, patroller_y], dtype=jnp.int32),
+    ])
 
     def place_dots(carry, idx):
         state, dot_count = carry
@@ -182,7 +194,7 @@ def reset(rng_key: jax.Array) -> tuple[EnvState, dict]:
 
     state = state.replace(
         game_state=state.game_state.at[0].set(dot_count.astype(jnp.float32)),
-        rng_key=jax.random.split(rng_key)[0],
+        rng_key=k_rest,
     )
     state = rebuild_grid(state, CONFIG)
     obs = get_obs(state, CONFIG)
@@ -190,14 +202,31 @@ def reset(rng_key: jax.Array) -> tuple[EnvState, dict]:
 
 
 def _chaser_behavior(state, slot, config):
-    """Move toward player using Manhattan distance. Only moves every 3rd turn."""
+    """Random walk every 2nd turn. Chase only within Manhattan 3."""
     pidx = state.player_idx
     key, subkey = jax.random.split(state.rng_key)
     state = state.replace(rng_key=key)
     can_move = (state.turn_number % 2 == 0)
-    state_moved, _ = move_toward(state, config, slot, state.x[pidx], state.y[pidx], subkey)
+
+    # Chase if within Manhattan 3, else random walk
+    dist = jnp.abs(state.x[slot] - state.x[pidx]) + jnp.abs(state.y[slot] - state.y[pidx])
+    in_range = dist <= 3
+
+    k1, k2 = jax.random.split(subkey)
+    # Chase path
+    chase_state, _ = move_toward(state, config, slot, state.x[pidx], state.y[pidx], k1)
+    # Random walk
+    direction = jax.random.randint(k2, (), 0, 4)
+    new_x = state.x[slot] + DX[direction]
+    new_y = state.y[slot] + DY[direction]
+    walk_state, walked = move_entity(state, config, slot, new_x, new_y)
+
+    # Select chase or walk
+    moved_state = jax.tree.map(
+        lambda c, w: jnp.where(in_range, c, w), chase_state, walk_state
+    )
     state = jax.tree.map(
-        lambda n, o: jnp.where(can_move, n, o), state_moved, state
+        lambda n, o: jnp.where(can_move, n, o), moved_state, state
     )
     return state
 
@@ -311,11 +340,13 @@ def step(state: EnvState, action: jnp.int32) -> tuple[EnvState, dict, jnp.float3
         status=jnp.where(all_collected & (state.status == 0), jnp.int32(1), state.status)
     )
 
-    # Phase 2: Ghost behaviors
+    # Phase 2: Ghost behaviors (step gating % 7; combined with chaser % 2 → every 14th turn,
+    # patroller % 3 → every 21st turn)
+    should_move_ghosts = (state.turn_number % 7 == 0)
     def ghost_loop(i, state):
         is_ghost = state.alive[i] & ((state.entity_type[i] == 3) | (state.entity_type[i] == 4))
         type_idx = state.entity_type[i]
-        branches = [lambda s, sl=i, c=CONFIG: fn(s, sl, c) for fn in BEHAVIOR_TABLE]
+        branches = [lambda s, sl=i, c=CONFIG, f=fn: f(s, sl, c) for fn in BEHAVIOR_TABLE]
         new_state = jax.lax.switch(type_idx, branches, state)
         # Check if ghost landed on player
         ghost_on_player = (new_state.x[i] == new_state.x[pidx]) & (new_state.y[i] == new_state.y[pidx])
@@ -330,7 +361,10 @@ def step(state: EnvState, action: jnp.int32) -> tuple[EnvState, dict, jnp.float3
         )
         return state
 
-    state = jax.lax.fori_loop(0, CONFIG.max_entities, ghost_loop, state)
+    new_state = jax.lax.fori_loop(0, CONFIG.max_entities, ghost_loop, state)
+    state = jax.tree.map(
+        lambda n, o: jnp.where(should_move_ghosts, n, o), new_state, state
+    )
 
     obs = get_obs(state, CONFIG)
     reward = CONFIG.step_penalty + state.reward_acc
@@ -351,10 +385,10 @@ def invariant_checks(state: EnvState) -> list[tuple[str, bool]]:
     results.append(("at_least_20_dots", dot_count >= 20))
 
     pidx = int(state.player_idx)
-    results.append(("player_at_center", int(state.x[pidx]) == 6 and int(state.y[pidx]) == 6))
+    px, py = int(state.x[pidx]), int(state.y[pidx])
+    results.append(("player_in_interior", 1 <= px <= 10 and 1 <= py <= 10))
 
     # Player not on ghost cell
-    px, py = int(state.x[pidx]), int(state.y[pidx])
     ghost_mask = state.alive & ((state.entity_type == 3) | (state.entity_type == 4))
     no_overlap = True
     for i in range(int(state.alive.sum())):

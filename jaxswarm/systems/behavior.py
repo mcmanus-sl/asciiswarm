@@ -58,7 +58,7 @@ def behavior_system(state: EnvState, config: EnvConfig, behavior_table=None) -> 
 
         # Dispatch behavior based on entity type
         type_idx = state.entity_type[i]
-        branches = [lambda s, sl=i, c=config: fn(s, sl, c) for fn in behavior_table]
+        branches = [lambda s, sl=i, c=config, f=fn: f(s, sl, c) for fn in behavior_table]
         new_state = jax.lax.switch(type_idx, branches, state)
 
         # Only apply if entity is alive NPC

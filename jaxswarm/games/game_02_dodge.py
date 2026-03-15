@@ -93,8 +93,12 @@ def step(state: EnvState, action: jnp.int32) -> tuple[EnvState, dict, jnp.float3
     # Phase 1.5: Check if player stepped onto hazard
     state = collision_system(state, CONFIG)
 
-    # Phase 2: NPC behaviors (wanderer bounces)
-    state = behavior_system(state, CONFIG)
+    # Phase 2: NPC behaviors (wanderer bounces, moves every other turn)
+    should_move = (state.turn_number % 2 == 0)
+    new_state = behavior_system(state, CONFIG)
+    state = jax.tree.map(
+        lambda n, o: jnp.where(should_move, n, o), new_state, state
+    )
 
     # Phase 3: Check if hazard stepped onto player, or player on exit
     state = collision_system(state, CONFIG)

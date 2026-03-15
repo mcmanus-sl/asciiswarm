@@ -27,18 +27,30 @@ CONFIG = EnvConfig(
 
 ACTION_NAMES = ["move_n", "move_s", "move_e", "move_w", "interact", "wait"]
 
-# Deterministic trace for seed 0: Player at (3,3), exit at (11,11).
-# Navigate through corridors: room 1 -> corridor (7,3) -> room 2 ->
-# corridor (11,7) -> room 4 -> reach exit at (11,11).
-DETERMINISTIC_TRACE = (
-    [2] * 8 +         # east from (3,3) through corridor to room 2: fight enemies on the way
-    [1] * 5 +         # south to (11,8) area — corridor to room 4
-    [2] * 3 +         # east to x=11
-    [1] * 5 +         # south toward exit at (11,11)
-    [2] * 2 + [3] * 2 + [1] * 2 + [2] * 2 +  # explore room 4 to find exit
-    [0] * 2 + [3] * 2 + [1] * 2 + [2] * 2 +
-    [1] * 3 + [3] * 3 + [0] * 3 + [2] * 3     # more exploration
-)
+# Deterministic trace: Room 1 → corridor (3,7-8) → Room 3 → corridor (7-8,11) → Room 4.
+# Player random in Room 1 (1-6, 1-6), exit random in Room 4 (9-14, 9-14).
+# Enemies move every other turn (gated). Must reach exit before HP runs out.
+_trace04 = []
+# Phase 1: Go to x=3, then rush south through corridor.
+# Interleave: go west while going south to minimize time.
+_trace04 += [3] * 5  # west to x=1 (at most 5 west from x=6)
+_trace04 += [2] * 2  # east to x=3
+_trace04 += [1] * 13 # south: y=1→6(room1), 7→8(corridor), 9→14(room3) max overshoot OK
+# Phase 2: East through corridor (7-8,11) and into Room 4
+# First go north if overshot past y=11
+_trace04 += [0] * 3  # north back to y=11 if overshot
+_trace04 += [2] * 8  # east through corridor and across Room 4
+# Phase 3: Sweep Room 4 (9-14, 9-14) — go to (9,9) corner, boustrophedon
+# Player at ~(11,11) after east. Go west to x=9, north to y=9 (stay in Room 4!)
+_trace04 += [3] * 2 + [0] * 2  # to (9,9) — careful not to exit Room 4
+for row in range(6):
+    if row % 2 == 0:
+        _trace04 += [2] * 5
+    else:
+        _trace04 += [3] * 5
+    if row < 5:
+        _trace04 += [1]
+DETERMINISTIC_TRACE = _trace04[:495]
 
 
 # Room layout: 4 rooms in quadrants connected by corridors
@@ -109,21 +121,29 @@ def reset(rng_key: jax.Array) -> tuple[EnvState, dict]:
         place_walls, state, jnp.arange(CONFIG.grid_w * CONFIG.grid_h, dtype=jnp.int32)
     )
 
-    # Player in center of room 1
+    # Player in random position within room 1 (x=1-6, y=1-6)
     player_tags = jnp.zeros(CONFIG.num_tags, dtype=jnp.bool_).at[0].set(True)
     player_props = jnp.zeros(CONFIG.num_props, dtype=jnp.float32)
     player_props = player_props.at[0].set(10.0)  # health
     player_props = player_props.at[1].set(2.0)   # attack
+    k_px, k_py, k_rest = jax.random.split(keys[ki], 3)
+    player_x = jax.random.randint(k_px, (), 1, 7)
+    player_y = jax.random.randint(k_py, (), 1, 7)
+    ki += 1
     state, player_slot = create_entity(
-        state, CONFIG, jnp.int32(1), jnp.int32(3), jnp.int32(3), player_tags, player_props
+        state, CONFIG, jnp.int32(1), player_x, player_y, player_tags, player_props
     )
     state = state.replace(player_idx=player_slot)
 
-    # Exit in center of room 4
+    # Exit in random position within room 4 (x=9-14, y=9-14)
     exit_tags = jnp.zeros(CONFIG.num_tags, dtype=jnp.bool_).at[4].set(True)
     exit_props = jnp.zeros(CONFIG.num_props, dtype=jnp.float32)
+    k_ex, k_ey = jax.random.split(keys[ki])
+    exit_x = jax.random.randint(k_ex, (), 9, 15)
+    exit_y = jax.random.randint(k_ey, (), 9, 15)
+    ki += 1
     state, _ = create_entity(
-        state, CONFIG, jnp.int32(2), jnp.int32(11), jnp.int32(11), exit_tags, exit_props
+        state, CONFIG, jnp.int32(2), exit_x, exit_y, exit_tags, exit_props
     )
 
     # Helper to place entity in random room position
@@ -306,7 +326,7 @@ def _run_behaviors(state: EnvState) -> EnvState:
     def loop_body(i, state):
         is_npc = state.alive[i] & (state.entity_type[i] >= 4) & (state.entity_type[i] <= 6)
         type_idx = state.entity_type[i]
-        branches = [lambda s, sl=i, c=CONFIG: fn(s, sl, c) for fn in BEHAVIOR_TABLE]
+        branches = [lambda s, sl=i, c=CONFIG, f=fn: f(s, sl, c) for fn in BEHAVIOR_TABLE]
         new_state = jax.lax.switch(type_idx, branches, state)
         # Check if enemy landed on player
         new_state = enemy_attack_player(new_state, jnp.int32(i), CONFIG)
@@ -338,8 +358,12 @@ def step(state: EnvState, action: jnp.int32) -> tuple[EnvState, dict, jnp.float3
         status=jnp.where(on_exit & (state.status == 0), jnp.int32(1), state.status)
     )
 
-    # Phase 2: NPC behaviors
-    state = _run_behaviors(state)
+    # Phase 2: NPC behaviors (move every other turn to give player breathing room)
+    should_move = (state.turn_number % 2 == 0)
+    new_state = _run_behaviors(state)
+    state = jax.tree.map(
+        lambda n, o: jnp.where(should_move, n, o), new_state, state
+    )
 
     obs = get_obs(state, CONFIG)
     reward = CONFIG.step_penalty + state.reward_acc

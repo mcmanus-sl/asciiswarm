@@ -89,8 +89,7 @@ def run_episode(game_module, network, key):
 
     for t in range(config.max_turns):
         logits, _ = network(obs)
-        rng, k_act = jax.random.split(k_act)
-        action = jax.random.categorical(rng, logits)
+        action = jnp.argmax(logits, axis=-1)
 
         state, obs, reward, done = step_jit(state, action)
         r = float(reward)

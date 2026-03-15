@@ -3,7 +3,22 @@
 import jax
 import jax.numpy as jnp
 from jaxswarm.core.state import EnvState, EnvConfig
-from jaxswarm.core.grid_ops import move_entity
+from jaxswarm.core.grid_ops import move_entity, get_entities_at
+
+
+def _has_solid(state, config, x, y):
+    """Check if cell (x, y) contains a solid entity (tag 1)."""
+    safe_x = jnp.clip(x, 0, config.grid_w - 1)
+    safe_y = jnp.clip(y, 0, config.grid_h - 1)
+    in_bounds = (x >= 0) & (x < config.grid_w) & (y >= 0) & (y < config.grid_h)
+    slots, count = get_entities_at(state, safe_x, safe_y)
+
+    def check(i, has_solid):
+        slot = slots[i]
+        valid = (i < count) & in_bounds & state.alive[slot] & state.tags[slot, 1]
+        return has_solid | valid
+
+    return jax.lax.fori_loop(0, config.max_stack, check, jnp.bool_(False))
 
 
 def move_toward(
@@ -50,8 +65,12 @@ def move_toward(
     final_x = jnp.where(at_target, cur_x, move_x)
     final_y = jnp.where(at_target, cur_y, move_y)
 
-    # Try primary move
-    state1, moved1 = move_entity(state, config, slot, final_x, final_y)
+    # Check for solid entities at target cells (walls block NPC movement)
+    primary_solid = _has_solid(state, config, final_x, final_y)
+
+    # Try primary move (skip if solid)
+    state1, moved1_raw = move_entity(state, config, slot, final_x, final_y)
+    moved1 = moved1_raw & ~primary_solid
 
     # If primary blocked, try the other axis
     alt_x = jnp.where(prefer_x, cur_x, cur_x + step_x)
@@ -59,7 +78,9 @@ def move_toward(
     alt_x = jnp.where(at_target, cur_x, alt_x)
     alt_y = jnp.where(at_target, cur_y, alt_y)
 
-    state2, moved2 = move_entity(state, config, slot, alt_x, alt_y)
+    alt_solid = _has_solid(state, config, alt_x, alt_y)
+    state2, moved2_raw = move_entity(state, config, slot, alt_x, alt_y)
+    moved2 = moved2_raw & ~alt_solid
 
     # Use primary if it worked, else try alternate
     final_state = jax.tree.map(
