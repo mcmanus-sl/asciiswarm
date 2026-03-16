@@ -23,7 +23,6 @@ import jax.numpy as jnp
 import equinox as eqx
 
 from jaxswarm.network import ActorCritic
-from jaxswarm.core.obs import get_obs
 
 # ---------------------------------------------------------------------------
 # Game registry (same as play_games.py)
@@ -83,10 +82,8 @@ GLYPH_MAPS = {
     },
     "game_07_hunger_clock": {
         1: ("@", (0, 255, 0)),
-        2: (">", (255, 255, 0)),
-        3: ("#", (128, 128, 128)),
-        4: ("w", (255, 80, 80)),
-        5: ("f", (100, 255, 100)),
+        3: ("f", (100, 255, 100)),
+        4: ("#", (128, 128, 128)),
     },
     "game_08_block_push": {
         1: ("@", (0, 255, 0)),
@@ -144,7 +141,7 @@ GAME_META = {
         "status": [],
     },
     "game_07_hunger_clock": {
-        "entities": {1: "Player", 2: "Exit", 3: "Wall", 4: "Wolf", 5: "Food"},
+        "entities": {1: "Player", 3: "Food", 4: "Wall"},
         "status": [("Food", "prop", 0)],
     },
     "game_08_block_push": {
@@ -166,20 +163,23 @@ GAME_META = {
 # ---------------------------------------------------------------------------
 
 BG_COLOR = (0, 0, 0)
-SIDEBAR_BG = (26, 26, 26)
+HUD_BG = (20, 20, 30)
 TITLEBAR_BG = (20, 20, 40)
 STATUSBAR_BG = (20, 20, 40)
+CELL_DARK = (16, 16, 16)
+CELL_LIGHT = (22, 22, 22)
 EMPTY_COLOR = (60, 60, 60)
 TEXT_COLOR = (200, 200, 200)
 DIM_TEXT = (120, 120, 120)
 HIGHLIGHT_COLOR = (255, 255, 255)
 BORDER_COLOR = (50, 50, 50)
 
-FONT_SIZE = 22
-SIDEBAR_W = 200
+FRAME_W, FRAME_H = 1280, 800
 TITLEBAR_H = 36
+HUD_H = 160
 STATUSBAR_H = 28
-CELL_PAD = 0  # extra px per cell beyond font metrics
+GRID_PAD = 16
+HUD_FONT_SIZE = 18
 
 AUTOPILOT_INTERVAL = 0.3  # seconds between AI steps
 FLASH_DURATION = 1.5  # seconds for win/death overlay
@@ -288,118 +288,132 @@ def get_status_values(state, meta):
     return values
 
 
-def render(screen, font, state, config, glyph_map, game_key,
+def render(screen, grid_font, hud_font, cell_size, state, config, glyph_map, game_key,
            game_title, cum_reward, autopilot, level_num, total_levels):
-    """Render game grid, sidebar, title bar, and status bar."""
-    sw, sh = screen.get_size()
+    """Render scaled grid + bottom HUD on 1280x800 logical surface."""
     meta = GAME_META.get(game_key, {"entities": {}, "status": []})
-
-    # Measure cell size from font
-    cell_w = font.size("M")[0] + CELL_PAD
-    cell_h = font.get_linesize() + CELL_PAD
-
     grid_h, grid_w = config.grid_h, config.grid_w
-    grid_pixel_w = cell_w * grid_w
-    grid_pixel_h = cell_h * grid_h
+
+    grid_pixel_w = cell_size * grid_w
+    grid_pixel_h = cell_size * grid_h
+
+    play_area_h = FRAME_H - TITLEBAR_H - HUD_H - STATUSBAR_H
+    grid_x0 = (FRAME_W - grid_pixel_w) // 2
+    grid_y0 = TITLEBAR_H + (play_area_h - grid_pixel_h) // 2
 
     # -- Background --
     screen.fill(BG_COLOR)
 
     # -- Title bar --
-    pygame.draw.rect(screen, TITLEBAR_BG, (0, 0, sw, TITLEBAR_H))
-    mode_str = "[AI]" if autopilot else "[MANUAL]"
-    title_text = f"  {game_title}     Lv {level_num}/{total_levels}     {mode_str}"
-    title_surf = font.render(title_text, True, HIGHLIGHT_COLOR)
+    pygame.draw.rect(screen, TITLEBAR_BG, (0, 0, FRAME_W, TITLEBAR_H))
+    title_font = hud_font
+    # Left: game title
+    title_surf = title_font.render(f"  {game_title}", True, HIGHLIGHT_COLOR)
     screen.blit(title_surf, (4, (TITLEBAR_H - title_surf.get_height()) // 2))
+    # Center: level
+    lv_surf = title_font.render(f"Lv {level_num}/{total_levels}", True, TEXT_COLOR)
+    screen.blit(lv_surf, ((FRAME_W - lv_surf.get_width()) // 2,
+                           (TITLEBAR_H - lv_surf.get_height()) // 2))
+    # Right: mode
+    mode_str = "[AI]" if autopilot else "[MANUAL]"
+    mode_surf = title_font.render(f"{mode_str}  ", True, HIGHLIGHT_COLOR)
+    screen.blit(mode_surf, (FRAME_W - mode_surf.get_width() - 4,
+                             (TITLEBAR_H - mode_surf.get_height()) // 2))
 
-    # -- Grid area --
-    grid_x0 = 8
-    grid_y0 = TITLEBAR_H + 4
-
-    # Build grid data
+    # -- Grid --
     grid = build_grid(state, config, glyph_map)
 
     for row in range(grid_h):
         for col in range(grid_w):
-            px = grid_x0 + col * cell_w
-            py = grid_y0 + row * cell_h
+            px = grid_x0 + col * cell_size
+            py = grid_y0 + row * cell_size
+
+            # Checkerboard cell background
+            bg = CELL_LIGHT if (row + col) % 2 == 0 else CELL_DARK
+            pygame.draw.rect(screen, bg, (px, py, cell_size, cell_size))
+
+            # Glyph
             cell = grid[row][col]
             if cell is not None:
                 glyph, color = cell
-                surf = font.render(glyph, True, color)
             else:
-                surf = font.render(".", True, EMPTY_COLOR)
-            screen.blit(surf, (px, py))
+                glyph, color = ".", EMPTY_COLOR
+            surf = grid_font.render(glyph, True, color)
+            # Center glyph in cell
+            gx = px + (cell_size - surf.get_width()) // 2
+            gy = py + (cell_size - surf.get_height()) // 2
+            screen.blit(surf, (gx, gy))
 
-    # -- Grid border --
-    border_rect = pygame.Rect(grid_x0 - 2, grid_y0 - 2,
-                              grid_pixel_w + 4, grid_pixel_h + 4)
+    # Grid border
+    border_rect = pygame.Rect(grid_x0 - 1, grid_y0 - 1,
+                              grid_pixel_w + 2, grid_pixel_h + 2)
     pygame.draw.rect(screen, BORDER_COLOR, border_rect, 1)
 
-    # -- Sidebar --
-    sidebar_x = grid_x0 + grid_pixel_w + 16
-    sidebar_top = grid_y0
+    # -- Bottom HUD --
+    hud_y = FRAME_H - HUD_H - STATUSBAR_H
+    pygame.draw.rect(screen, HUD_BG, (0, hud_y, FRAME_W, HUD_H))
+    # Top border
+    pygame.draw.line(screen, BORDER_COLOR, (0, hud_y), (FRAME_W, hud_y))
 
-    # Sidebar background
-    pygame.draw.rect(screen, SIDEBAR_BG,
-                     (sidebar_x - 8, TITLEBAR_H, SIDEBAR_W + 16, sh - TITLEBAR_H - STATUSBAR_H))
+    col_w = FRAME_W // 3
+    line_h = hud_font.get_linesize() + 2
+    pad_x = 16
+    pad_y = 8
 
-    # Small font for sidebar
-    sf = pygame.font.SysFont("DejaVu Sans Mono,Courier New,monospace", FONT_SIZE - 4)
-    line_h = sf.get_linesize() + 2
-    y = sidebar_top
+    # Column dividers
+    pygame.draw.line(screen, BORDER_COLOR, (col_w, hud_y + 4), (col_w, hud_y + HUD_H - 4))
+    pygame.draw.line(screen, BORDER_COLOR, (col_w * 2, hud_y + 4), (col_w * 2, hud_y + HUD_H - 4))
 
-    # LEGEND
-    header = font.render("LEGEND", True, HIGHLIGHT_COLOR)
-    screen.blit(header, (sidebar_x, y))
-    y += line_h + 4
+    # -- Column 1: LEGEND --
+    cx = pad_x
+    cy = hud_y + pad_y
+    header = hud_font.render("LEGEND", True, HIGHLIGHT_COLOR)
+    screen.blit(header, (cx, cy))
+    cy += line_h + 2
 
-    for etype in sorted(meta["entities"].keys()):
-        name = meta["entities"][etype]
+    entity_items = sorted(meta["entities"].items())
+    # Two-column sub-layout for legend
+    sub_col_w = (col_w - pad_x * 2) // 2
+    for i, (etype, name) in enumerate(entity_items):
+        sub_col = i % 2
+        sub_row = i // 2
+        ex = cx + sub_col * sub_col_w
+        ey = cy + sub_row * line_h
         if etype in glyph_map:
             glyph, color = glyph_map[etype]
-            glyph_surf = sf.render(glyph, True, color)
-            label_surf = sf.render(f" {name}", True, TEXT_COLOR)
-            screen.blit(glyph_surf, (sidebar_x, y))
-            screen.blit(label_surf, (sidebar_x + glyph_surf.get_width(), y))
+            g_surf = hud_font.render(glyph, True, color)
+            n_surf = hud_font.render(f" {name}", True, TEXT_COLOR)
+            screen.blit(g_surf, (ex, ey))
+            screen.blit(n_surf, (ex + g_surf.get_width(), ey))
         else:
-            label_surf = sf.render(f"  {name}", True, TEXT_COLOR)
-            screen.blit(label_surf, (sidebar_x, y))
-        y += line_h
+            n_surf = hud_font.render(f"  {name}", True, TEXT_COLOR)
+            screen.blit(n_surf, (ex, ey))
 
-    # Divider
-    y += 6
-    pygame.draw.line(screen, BORDER_COLOR, (sidebar_x, y), (sidebar_x + SIDEBAR_W - 8, y))
-    y += 8
-
-    # STATUS
-    header = font.render("STATUS", True, HIGHLIGHT_COLOR)
-    screen.blit(header, (sidebar_x, y))
-    y += line_h + 4
+    # -- Column 2: STATUS --
+    cx = col_w + pad_x
+    cy = hud_y + pad_y
+    header = hud_font.render("STATUS", True, HIGHLIGHT_COLOR)
+    screen.blit(header, (cx, cy))
+    cy += line_h + 2
 
     status_vals = get_status_values(state, meta)
     for label, val in status_vals:
-        text = sf.render(f"{label}: {val}", True, TEXT_COLOR)
-        screen.blit(text, (sidebar_x, y))
-        y += line_h
+        text = hud_font.render(f"{label}: {val}", True, TEXT_COLOR)
+        screen.blit(text, (cx, cy))
+        cy += line_h
 
-    # Always show turn and score
-    text = sf.render(f"Turn: {int(state.turn_number)}", True, TEXT_COLOR)
-    screen.blit(text, (sidebar_x, y))
-    y += line_h
-    text = sf.render(f"Score: {cum_reward:+.2f}", True, TEXT_COLOR)
-    screen.blit(text, (sidebar_x, y))
-    y += line_h
+    text = hud_font.render(f"Turn: {int(state.turn_number)}", True, TEXT_COLOR)
+    screen.blit(text, (cx, cy))
+    cy += line_h
+    text = hud_font.render(f"Score: {cum_reward:+.2f}", True, TEXT_COLOR)
+    screen.blit(text, (cx, cy))
 
-    # Divider
-    y += 6
-    pygame.draw.line(screen, BORDER_COLOR, (sidebar_x, y), (sidebar_x + SIDEBAR_W - 8, y))
-    y += 8
-
-    # CONTROLS
-    header = font.render("CONTROLS", True, HIGHLIGHT_COLOR)
-    screen.blit(header, (sidebar_x, y))
-    y += line_h + 4
+    # -- Column 3: CONTROLS --
+    cx = col_w * 2 + pad_x
+    cy = hud_y + pad_y
+    header = hud_font.render("CONTROLS", True, HIGHLIGHT_COLOR)
+    screen.blit(header, (cx, cy))
+    cy += line_h + 2
 
     controls = [
         ("Arrows", "Move"),
@@ -410,23 +424,21 @@ def render(screen, font, state, config, glyph_map, game_key,
         ("Q", "Quit"),
     ]
     for key_label, desc in controls:
-        key_surf = sf.render(f"{key_label:<7}", True, DIM_TEXT)
-        desc_surf = sf.render(desc, True, TEXT_COLOR)
-        screen.blit(key_surf, (sidebar_x, y))
-        screen.blit(desc_surf, (sidebar_x + key_surf.get_width(), y))
-        y += line_h
+        key_surf = hud_font.render(f"{key_label:<7}", True, DIM_TEXT)
+        desc_surf = hud_font.render(desc, True, TEXT_COLOR)
+        screen.blit(key_surf, (cx, cy))
+        screen.blit(desc_surf, (cx + key_surf.get_width(), cy))
+        cy += line_h
 
     # -- Status bar --
-    pygame.draw.rect(screen, STATUSBAR_BG, (0, sh - STATUSBAR_H, sw, STATUSBAR_H))
+    pygame.draw.rect(screen, STATUSBAR_BG, (0, FRAME_H - STATUSBAR_H, FRAME_W, STATUSBAR_H))
     status_val = int(state.status)
     status_str = {1: "WON!", -1: "DEAD", 0: "playing"}.get(status_val, "?")
-    bar_text = f"  {status_str}"
-    bar_right = f"Turn {int(state.turn_number)}  "
-    bar_surf = sf.render(bar_text, True, TEXT_COLOR)
-    screen.blit(bar_surf, (4, sh - STATUSBAR_H + (STATUSBAR_H - bar_surf.get_height()) // 2))
-    right_surf = sf.render(bar_right, True, DIM_TEXT)
-    screen.blit(right_surf, (sw - right_surf.get_width() - 4,
-                             sh - STATUSBAR_H + (STATUSBAR_H - right_surf.get_height()) // 2))
+    bar_surf = hud_font.render(f"  {status_str}", True, TEXT_COLOR)
+    screen.blit(bar_surf, (4, FRAME_H - STATUSBAR_H + (STATUSBAR_H - bar_surf.get_height()) // 2))
+    right_surf = hud_font.render(f"Turn {int(state.turn_number)}  ", True, DIM_TEXT)
+    screen.blit(right_surf, (FRAME_W - right_surf.get_width() - 4,
+                             FRAME_H - STATUSBAR_H + (STATUSBAR_H - right_surf.get_height()) // 2))
 
     pygame.display.flip()
 
@@ -446,43 +458,30 @@ def render_flash(screen, font, message, color):
 
 
 # ---------------------------------------------------------------------------
-# Compute window size from game config
-# ---------------------------------------------------------------------------
-
-def compute_window_size(config, font):
-    """Calculate window dimensions based on grid size and font metrics."""
-    cell_w = font.size("M")[0] + CELL_PAD
-    cell_h = font.get_linesize() + CELL_PAD
-
-    grid_pixel_w = cell_w * config.grid_w
-    grid_pixel_h = cell_h * config.grid_h
-
-    win_w = 8 + grid_pixel_w + 16 + SIDEBAR_W + 24
-    win_h = TITLEBAR_H + 4 + grid_pixel_h + 8 + STATUSBAR_H
-    return max(win_w, 500), max(win_h, 400)
-
-
-# ---------------------------------------------------------------------------
 # Play one game
 # ---------------------------------------------------------------------------
 
-def play_game(game_module, network, game_key, glyph_map, level_num, total_levels, autopilot=False):
+def play_game(screen, game_module, network, game_key, glyph_map, level_num, total_levels, autopilot=False):
     """Play a single game. Returns (result, autopilot)."""
     config = game_module.CONFIG
     game_title = GAMES[level_num - 1][1]
 
-    # Init pygame + window
-    pygame.init()
-
-    font = pygame.font.SysFont("DejaVu Sans Mono,Courier New,monospace", FONT_SIZE)
-    win_w, win_h = compute_window_size(config, font)
-    screen = pygame.display.set_mode((win_w, win_h), pygame.RESIZABLE)
     pygame.display.set_caption(f"{game_title} - ASCII Swarm")
     clock = pygame.time.Clock()
 
+    # Compute cell size for this game's grid
+    play_area_h = FRAME_H - TITLEBAR_H - HUD_H - STATUSBAR_H
+    play_area_w = FRAME_W - GRID_PAD * 2
+    cell_size = min(play_area_w // config.grid_w, play_area_h // config.grid_h)
+
+    # Fonts: grid glyph font scaled to cell, HUD font fixed
+    grid_font = pygame.font.SysFont("DejaVu Sans Mono,Courier New,monospace", max(12, int(cell_size * 0.7)))
+    hud_font = pygame.font.SysFont("DejaVu Sans Mono,Courier New,monospace", HUD_FONT_SIZE)
+    flash_font = pygame.font.SysFont("DejaVu Sans Mono,Courier New,monospace", 36)
+
     step_jit = jax.jit(game_module.step)
 
-    rng = jax.random.PRNGKey(42)
+    rng = jax.random.PRNGKey(int(time.time() * 1000) % (2**31))
     state, obs = game_module.reset(rng)
     cum_reward = 0.0
 
@@ -501,6 +500,8 @@ def play_game(game_module, network, game_key, glyph_map, level_num, total_levels
             if event.type == pygame.QUIT:
                 return "quit", autopilot
             if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return "quit", autopilot
                 mapped = map_key(event.key)
                 if mapped is None:
                     continue
@@ -521,7 +522,6 @@ def play_game(game_module, network, game_key, glyph_map, level_num, total_levels
         if autopilot and int(state.status) == 0:
             now = time.time()
             if now - last_ai_step >= AUTOPILOT_INTERVAL:
-                obs = get_obs(state, config)
                 logits, _ = network(obs)
                 action = int(jnp.argmax(logits))
                 last_ai_step = now
@@ -532,17 +532,17 @@ def play_game(game_module, network, game_key, glyph_map, level_num, total_levels
             cum_reward += float(reward)
 
         # Render
-        render(screen, font, state, config, glyph_map, game_key,
+        render(screen, grid_font, hud_font, cell_size, state, config, glyph_map, game_key,
                game_title, cum_reward, autopilot, level_num, total_levels)
 
         # Check game over
         status = int(state.status)
         if status == 1:
-            render_flash(screen, font, "YOU WON! Advancing...", (0, 255, 0))
+            render_flash(screen, flash_font, "YOU WON! Advancing...", (0, 255, 0))
             pygame.time.wait(int(FLASH_DURATION * 1000))
             return "won", autopilot
         elif status == -1:
-            render_flash(screen, font, "YOU DIED! Back to level 1...", (255, 60, 60))
+            render_flash(screen, flash_font, "YOU DIED! Back to level 1...", (255, 60, 60))
             pygame.time.wait(int(FLASH_DURATION * 1000))
             return "died", autopilot
 
@@ -567,6 +567,10 @@ def main(start_level):
         print("No weights found in weights/. Train games first.")
         return
 
+    # Init pygame once — persistent window across levels
+    pygame.init()
+    screen = pygame.display.set_mode((FRAME_W, FRAME_H), pygame.SCALED)
+
     total_levels = len(playable)
     level_idx = max(0, min(start_level - 1, total_levels - 1))
     autopilot = False
@@ -579,7 +583,7 @@ def main(start_level):
 
         game_module, network, game_key = load_game(game_path)
 
-        result, autopilot = play_game(game_module, network, game_key, glyph_map,
+        result, autopilot = play_game(screen, game_module, network, game_key, glyph_map,
                                       level_idx + 1, total_levels, autopilot)
 
         if result == "quit":
@@ -589,12 +593,9 @@ def main(start_level):
                 level_idx += 1
             else:
                 # All levels complete — show briefly then exit
-                pygame.init()
-                font = pygame.font.SysFont("DejaVu Sans Mono,Courier New,monospace", FONT_SIZE)
-                screen = pygame.display.get_surface()
-                if screen:
-                    render_flash(screen, font, "ALL LEVELS COMPLETE!", (255, 255, 0))
-                    pygame.time.wait(2000)
+                font = pygame.font.SysFont("DejaVu Sans Mono,Courier New,monospace", 36)
+                render_flash(screen, font, "ALL LEVELS COMPLETE!", (255, 255, 0))
+                pygame.time.wait(2000)
                 break
         elif result == "died":
             level_idx = 0

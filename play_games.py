@@ -9,6 +9,7 @@ Usage:
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import sys
+import time
 import curses
 import importlib
 
@@ -17,7 +18,6 @@ import jax.numpy as jnp
 import equinox as eqx
 
 from jaxswarm.network import ActorCritic
-from jaxswarm.core.obs import get_obs
 
 # ---------------------------------------------------------------------------
 # Game registry (ordered by level)
@@ -77,10 +77,8 @@ GLYPH_MAPS = {
     },
     "game_07_hunger_clock": {
         1: ("@", (0, 255, 0)),
-        2: (">", (255, 255, 0)),
-        3: ("#", (128, 128, 128)),
-        4: ("w", (255, 80, 80)),
-        5: ("f", (100, 255, 100)),
+        3: ("f", (100, 255, 100)),
+        4: ("#", (128, 128, 128)),
     },
     "game_08_block_push": {
         1: ("@", (0, 255, 0)),
@@ -284,7 +282,7 @@ def play_game(stdscr, game_module, network, game_key, glyph_map, level_num, tota
 
     step_jit = jax.jit(game_module.step)
 
-    rng = jax.random.PRNGKey(42)
+    rng = jax.random.PRNGKey(int(time.time() * 1000) % (2**31))
     state, obs = game_module.reset(rng)
     cum_reward = 0.0
 
@@ -305,8 +303,7 @@ def play_game(stdscr, game_module, network, game_key, glyph_map, level_num, tota
         if key == curses.ERR:
             if not autopilot:
                 continue
-            # AI picks action from policy
-            obs = get_obs(state, config)
+            # AI picks action from policy (use obs tracked from step/reset)
             logits, _ = network(obs)
             action = int(jnp.argmax(logits))
         else:

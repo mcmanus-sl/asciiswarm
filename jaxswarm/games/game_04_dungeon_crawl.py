@@ -358,8 +358,9 @@ def step(state: EnvState, action: jnp.int32) -> tuple[EnvState, dict, jnp.float3
         is_exit = (i < exit_count) & state.alive[slot] & state.tags[slot, 4]
         return found | is_exit
     on_exit = jax.lax.fori_loop(0, CONFIG.max_stack, check_exit, jnp.bool_(False))
+    has_killed = state.game_state[0] >= 1
     state = state.replace(
-        status=jnp.where(on_exit & (state.status == 0), jnp.int32(1), state.status)
+        status=jnp.where(on_exit & (state.status == 0) & has_killed, jnp.int32(1), state.status)
     )
 
     # Phase 2: NPC behaviors (move every other turn to give player breathing room)
@@ -370,7 +371,10 @@ def step(state: EnvState, action: jnp.int32) -> tuple[EnvState, dict, jnp.float3
     )
 
     obs = get_obs(state, CONFIG)
+    # Shaping: bonus for first kill to guide RL toward combat
+    first_kill = (state.game_state[0] == 1) & (state.reward_acc > 0.0)
     reward = CONFIG.step_penalty + state.reward_acc
+    reward = reward + jnp.where(first_kill, 1.0, 0.0)
     reward = reward + jnp.where(state.status == 1, 10.0, 0.0)
     reward = reward + jnp.where(state.status == -1, -10.0, 0.0)
     done = (state.status != 0) | (state.turn_number >= CONFIG.max_turns)

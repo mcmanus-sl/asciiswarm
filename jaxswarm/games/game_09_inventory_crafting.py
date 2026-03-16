@@ -10,7 +10,7 @@ from jaxswarm.systems.movement import DX, DY
 
 CONFIG = EnvConfig(
     grid_w=16, grid_h=16,
-    max_entities=20,
+    max_entities=28,
     max_stack=2,
     num_entity_types=8,    # 0=unused, 1=player, 2=exit, 3=wall, 4=wood, 5=ore, 6=workbench, 7=rubble
     num_tags=7,            # standard 6 + channel 6 = scent (wave distance field)
@@ -98,9 +98,9 @@ def reset(rng_key: jax.Array) -> tuple[EnvState, dict]:
     # 1: exit
     # 2: workbench
     # 3: rubble (gap at x=12, y=gap_y) — solid
-    # 4-6: wall segments near x=12 (gap_y-1, gap_y+1, gap_y+2) — solid
-    # 7-11: wood (5 candidates, gated by safe mask)
-    # 12-15: ore (4 candidates, gated by safe mask)
+    # 4-18: walls at x=12 for y=0..15 excluding gap_y (15 walls)
+    # 19-23: wood (5 candidates, gated by safe mask)
+    # 24-27: ore (4 candidates, gated by safe mask)
 
     # Entity type array
     entity_type = state.entity_type
@@ -108,13 +108,12 @@ def reset(rng_key: jax.Array) -> tuple[EnvState, dict]:
     entity_type = entity_type.at[1].set(2)   # exit
     entity_type = entity_type.at[2].set(6)   # workbench
     entity_type = entity_type.at[3].set(7)   # rubble
-    entity_type = entity_type.at[4].set(3)   # wall
-    entity_type = entity_type.at[5].set(3)   # wall
-    entity_type = entity_type.at[6].set(3)   # wall
+    for i in range(15):
+        entity_type = entity_type.at[4 + i].set(3)   # wall
     for i in range(5):
-        entity_type = entity_type.at[7 + i].set(4)   # wood
+        entity_type = entity_type.at[19 + i].set(4)  # wood
     for i in range(4):
-        entity_type = entity_type.at[12 + i].set(5)  # ore
+        entity_type = entity_type.at[24 + i].set(5)  # ore
 
     # X positions
     x = state.x
@@ -122,41 +121,43 @@ def reset(rng_key: jax.Array) -> tuple[EnvState, dict]:
     x = x.at[1].set(exit_x)
     x = x.at[2].set(wb_x)
     x = x.at[3].set(jnp.int32(12))          # rubble
-    x = x.at[4].set(jnp.int32(12))          # wall segment
-    x = x.at[5].set(jnp.int32(12))          # wall segment
-    x = x.at[6].set(jnp.int32(12))          # wall segment
+    for i in range(15):
+        x = x.at[4 + i].set(jnp.int32(12))  # wall column
     for i in range(5):
-        x = x.at[7 + i].set(wood_xs[i])
+        x = x.at[19 + i].set(wood_xs[i])
     for i in range(4):
-        x = x.at[12 + i].set(ore_xs[i])
+        x = x.at[24 + i].set(ore_xs[i])
 
-    # Y positions
+    # Y positions — wall column at x=12: y=0..15 skipping gap_y
+    # Build wall y-values: 0..15 with gap_y removed, giving 15 values
+    all_ys = jnp.arange(16, dtype=jnp.int32)
+    # Shift values at and above gap_y up by one to fill the gap
+    wall_ys_col = jnp.where(all_ys[:15] >= gap_y, all_ys[:15] + 1, all_ys[:15])
+
     y = state.y
     y = y.at[0].set(player_y)
     y = y.at[1].set(exit_y)
     y = y.at[2].set(wb_y)
     y = y.at[3].set(gap_y)                   # rubble at the gap
-    y = y.at[4].set(jnp.clip(gap_y - 1, 0, 15))  # wall above gap
-    y = y.at[5].set(jnp.clip(gap_y + 1, 0, 15))  # wall below gap
-    y = y.at[6].set(jnp.clip(gap_y + 2, 0, 15))  # wall further below
+    for i in range(15):
+        y = y.at[4 + i].set(wall_ys_col[i])
     for i in range(5):
-        y = y.at[7 + i].set(wood_ys[i])
+        y = y.at[19 + i].set(wood_ys[i])
     for i in range(4):
-        y = y.at[12 + i].set(ore_ys[i])
+        y = y.at[24 + i].set(ore_ys[i])
 
     # Alive mask — all fixed entities alive, wood/ore gated by safe
     alive = state.alive
-    alive = alive.at[0].set(True)   # player
-    alive = alive.at[1].set(True)   # exit
-    alive = alive.at[2].set(True)   # workbench
-    alive = alive.at[3].set(True)   # rubble
-    alive = alive.at[4].set(True)   # wall
-    alive = alive.at[5].set(True)   # wall
-    alive = alive.at[6].set(True)   # wall
+    alive = alive.at[0].set(True)    # player
+    alive = alive.at[1].set(True)    # exit
+    alive = alive.at[2].set(True)    # workbench
+    alive = alive.at[3].set(True)    # rubble
+    for i in range(15):
+        alive = alive.at[4 + i].set(True)    # wall
     for i in range(5):
-        alive = alive.at[7 + i].set(wood_safe[i])
+        alive = alive.at[19 + i].set(wood_safe[i])
     for i in range(4):
-        alive = alive.at[12 + i].set(ore_safe[i])
+        alive = alive.at[24 + i].set(ore_safe[i])
 
     # Tags
     tags = state.tags
@@ -164,13 +165,12 @@ def reset(rng_key: jax.Array) -> tuple[EnvState, dict]:
     tags = tags.at[1, 4].set(True)   # exit: tag 4 (exit)
     tags = tags.at[2, 5].set(True)   # workbench: tag 5 (npc)
     tags = tags.at[3, 1].set(True)   # rubble: tag 1 (solid)
-    tags = tags.at[4, 1].set(True)   # wall: tag 1 (solid)
-    tags = tags.at[5, 1].set(True)   # wall: tag 1 (solid)
-    tags = tags.at[6, 1].set(True)   # wall: tag 1 (solid)
+    for i in range(15):
+        tags = tags.at[4 + i, 1].set(True)   # wall: tag 1 (solid)
     for i in range(5):
-        tags = tags.at[7 + i, 3].set(True)   # wood: tag 3 (pickup)
+        tags = tags.at[19 + i, 3].set(True)  # wood: tag 3 (pickup)
     for i in range(4):
-        tags = tags.at[12 + i, 3].set(True)  # ore: tag 3 (pickup)
+        tags = tags.at[24 + i, 3].set(True)  # ore: tag 3 (pickup)
 
     state = state.replace(
         alive=alive,
