@@ -1,7 +1,6 @@
 """Behavioral Compiler — RL-TDD evaluator with 5-layer diagnostics."""
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import sys
 import json
 import importlib
@@ -12,7 +11,8 @@ import jax.numpy as jnp
 import equinox as eqx
 
 from jaxswarm.core.obs import get_obs
-from jaxswarm.train import train, TrainConfig
+from jaxswarm.network import select_network
+from jaxswarm.train import train, TrainConfig, auto_train_config
 
 
 def run_deterministic_trace(game_module):
@@ -102,30 +102,15 @@ def run_random_agent(game_module, num_episodes=1000):
 
 def run_ppo_training(game_module, key):
     """Layer 3: PPO training with win rate tracking."""
-    # We'll train in phases to get win rates at different checkpoints
-    # Phase 1: ~10k steps
-    steps_per_update = 128 * 4096  # num_steps * num_envs
-    updates_10k = max(1, 10_000 // (128))  # ~78 updates for 10k env-steps per env
-    updates_50k = max(1, 50_000 // (128))
-    updates_100k = max(1, 100_000 // (128))
+    config = game_module.CONFIG
 
-    # Single training run with enough updates
-    tc = TrainConfig(
-        num_envs=4096,
-        num_steps=128,
-        num_updates=updates_100k,
-        lr=3e-4,
-        gamma=0.99,
-        gae_lambda=0.95,
-        clip_eps=0.2,
-        vf_coef=0.5,
-        ent_coef=0.01,
-        num_minibatches=4,
-        update_epochs=4,
-    )
+    # Auto-compute training config from game size + available VRAM
+    # Override num_updates to target ~100k env-steps-per-env (backward compat with old evaluator)
+    tc = auto_train_config(config, num_updates=max(1, 100_000 // 128))
 
     print(f"  Training PPO: {tc.num_updates} updates × {tc.num_steps} steps × {tc.num_envs} envs")
     print(f"  Total env steps: {tc.num_updates * tc.num_steps * tc.num_envs:,}")
+    print(f"  Network: {select_network(config).__name__}")
 
     t0 = time.time()
     network, metrics = train(game_module, tc, key=key)
@@ -319,9 +304,16 @@ def evaluate(module_path: str):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python evaluate_game.py <module_path>")
+        print("Usage: python evaluate_game.py <module_path> [--gpu N]")
         print("Example: python evaluate_game.py jaxswarm.games.game_01_empty_exit")
         sys.exit(1)
 
-    report = evaluate(sys.argv[1])
+    # Optional --gpu argument
+    args = sys.argv[1:]
+    module_path = args[0]
+    if "--gpu" in args:
+        gpu_idx = args[args.index("--gpu") + 1]
+        os.environ["CUDA_VISIBLE_DEVICES"] = gpu_idx
+
+    report = evaluate(module_path)
     sys.exit(0 if report["overall_pass"] else 1)
